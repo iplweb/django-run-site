@@ -1,0 +1,97 @@
+# BPP-style configuration: custom Postgres image, baseline dump, hooks
+# with dynamic CLI args, project-specific env-var names. Mirrors §6.2 of the
+# spec. Useful as a reference for what a full real-world config can look
+# like.
+
+project_slug = "bpp"
+manage_py = "src/manage.py"
+
+[python]
+executable = ".venv/bin/python"
+
+[postgres]
+image = "iplweb/bpp_dbserver:psql-16.13"
+user = "bpp"
+password = "password"
+db = "bpp"
+stream_logs = true
+
+[postgres.env]
+POSTGRESQL_UNSAFE_BUT_FAST = "1"
+POSTGRESQL_MAX_LOCKS_PER_TRANSACTION = "512"
+
+[redis]
+image = "redis:7-alpine"
+
+[dump]
+default_path = "src/baseline-sql/baseline.sql"
+strategy = "auto"
+restore_jobs = 8
+fail_fast = true
+
+[env]
+database_url = "DATABASE_URL"
+db_host = "DJANGO_BPP_DB_HOST"
+db_port = "DJANGO_BPP_DB_PORT"
+db_name = "DJANGO_BPP_DB_NAME"
+db_user = "DJANGO_BPP_DB_USER"
+db_password = "DJANGO_BPP_DB_PASSWORD"
+redis_url = "DJANGO_BPP_REDIS_URL"
+redis_host = "DJANGO_BPP_REDIS_HOST"
+redis_port = "DJANGO_BPP_REDIS_PORT"
+
+[env.extra]
+DJANGO_BPP_SKIP_DOTENV = "1"
+
+[django]
+runserver_bind = "127.0.0.1"
+runserver_display_host = "localhost"
+browser_probe_path = "/admin/login/"
+migrate = true
+
+[superuser]
+enabled = true
+username = "admin"
+password = "admin"
+email = "admin@example.com"
+
+[celery]
+app = "django_bpp.celery_tasks"
+enabled = true
+worker_pool = "solo"
+worker_log_level = "info"
+with_beat = false
+
+# Build frontend assets before starting containers — fail-fast if make is
+# missing or the recipe errors.
+[[hooks.pre_containers]]
+type = "command"
+command = ["make", "assets"]
+timeout = 300
+cli_disable_flag = "--skip-assets"
+
+# Clear the password-policy "must change password" flag on the dev superuser
+# so logins don't get redirected to the change-password form.
+[[hooks.post_superuser]]
+type = "django"
+callable = "django_bpp.runsite_hooks:clear_password_policy"
+
+# Optional: fetch the PBN integration token from a remote SSH host after
+# migrations. Triggered by `--get-pbn-token-from USER@HOST`; the hook reads
+# `context["opts"]["pbn_ssh_source"]`.
+[[hooks.post_migrate]]
+type = "django"
+callable = "django_bpp.runsite_hooks:fetch_pbn_token"
+timeout = 60
+
+[[hooks.post_migrate.cli_args]]
+flag = "--get-pbn-token-from"
+dest = "pbn_ssh_source"
+metavar = "USER@HOST"
+help = "Pull PBN token from this SSH host after migrations"
+
+[[hooks.post_migrate.cli_args]]
+flag = "--remote-deploy-path"
+dest = "pbn_remote_deploy_path"
+default = "~/bpp-deploy"
+help = "Path on the SSH host where the deploy lives (default ~/bpp-deploy)"

@@ -1,0 +1,33 @@
+# Configuration for the bundled examples/test_site Django project.
+# Used by integration tests that exercise django-run-site end-to-end.
+
+project_slug = "test_site"
+manage_py = "manage.py"
+
+[python]
+executable = "auto"
+
+[postgres]
+image = "postgres:16"
+user = "test_site"
+password = "test-password"
+db = "test_site"
+
+[redis]
+image = "redis:7-alpine"
+
+[django]
+runserver_bind = "127.0.0.1"
+runserver_display_host = "localhost"
+browser_probe_path = "/healthz/"
+migrate = true
+
+[superuser]
+enabled = true
+username = "admin"
+password = "admin"
+email = "admin@example.com"
+
+[env]
+database_url = "DATABASE_URL"
+redis_url = "REDIS_URL"

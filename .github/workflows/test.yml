@@ -1,0 +1,169 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package and dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest -v -m "not docker" --tb=short
+
+  test-site:
+    name: test-site (py${{ matrix.python }} x dj${{ matrix.django }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+        django: ["5.2", "6.0"]
+        exclude:
+          - python: "3.11"
+            django: "6.0"
+    services:
+      postgres:
+        image: postgres:16
+        ports: ["5432:5432"]
+        env:
+          POSTGRES_USER: test_site
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: test_site
+        options: >-
+          --health-cmd "pg_isready -U test_site"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://test_site:test-password@127.0.0.1:5432/test_site
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install test_site dependencies
+        env:
+          DJANGO_VERSION: ${{ matrix.django }}
+        working-directory: examples/test_site
+        run: |
+          python -m pip install --upgrade pip
+          pip install "django~=${DJANGO_VERSION}.0" \
+                      "psycopg[binary]>=3.1" \
+                      "dj-database-url>=2" \
+                      "redis>=5"
+
+      - name: Run Django system check
+        working-directory: examples/test_site
+        run: python manage.py check
+
+      - name: Run migrations
+        working-directory: examples/test_site
+        run: python manage.py migrate --noinput
+
+      - name: Smoke-test homepage and healthz
+        working-directory: examples/test_site
+        run: |
+          python -c "
+          import os, sys
+          sys.path.insert(0, '.')
+          os.environ['DJANGO_SETTINGS_MODULE']='test_site.settings'
+          import django; django.setup()
+          from django.test import Client
+          c = Client()
+          home = c.get('/')
+          assert home.status_code == 200, f'home: {home.status_code}'
+          assert b'test_site' in home.content
+          health = c.get('/healthz/')
+          assert health.status_code == 200, f'healthz: {health.status_code}'
+          assert health.json()['ok'] is True
+          print('test_site smoke OK')
+          "
+
+  install-and-doctor:
+    name: install + doctor (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install built package via pipx-style isolated env
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: --version
+        run: django-run-site --version
+
+      - name: --help
+        run: django-run-site --help
+
+      - name: doctor against examples/test_site
+        env:
+          DOCTOR_PROJECT_ROOT: ${{ github.workspace }}/examples/test_site
+        run: |
+          set -e
+          # We don't have a Docker daemon here, so we expect doctor to
+          # fail at the Docker probe step. Capture and confirm the
+          # earlier checks passed.
+          set +e
+          django-run-site doctor --project-root "$DOCTOR_PROJECT_ROOT" \
+            --no-cache --no-pull > doctor.log 2>&1
+          rc=$?
+          set -e
+          cat doctor.log
+          grep -q "manage.py" doctor.log
+          grep -q "Probing manage.py" doctor.log
+          # Exit non-zero is expected when Docker is unavailable; we
+          # only care that the earlier checks reported.
+          if [ "$rc" -eq 0 ]; then
+            echo "doctor exited 0 (Docker available?)"
+          else
+            echo "doctor exited $rc (no Docker — expected)"
+          fi

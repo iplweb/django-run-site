@@ -1,0 +1,15 @@
+[project]
+name = "django-run-site-test-site"
+version = "0.0.0"
+description = "Tiny Django app used by django-run-site integration tests."
+requires-python = ">=3.11"
+dependencies = [
+    "django>=5.2,<7",
+    "psycopg[binary]>=3.1",
+    "dj-database-url>=2",
+    "redis>=5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

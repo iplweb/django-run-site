@@ -1,0 +1,30 @@
+# Smallest viable runsite.toml — fits a typical Django project layout where
+# manage.py lives at the repo root, and you're happy with admin/admin as
+# the dev superuser.
+
+project_slug = "myproject"
+manage_py = "manage.py"
+
+[python]
+executable = "auto"
+
+[postgres]
+image = "postgres:16"
+user = "myproject"
+password = "password"
+db = "myproject"
+
+[redis]
+image = "redis:7-alpine"
+
+[django]
+runserver_bind = "127.0.0.1"
+runserver_display_host = "localhost"
+browser_probe_path = "/admin/login/"
+migrate = true
+
+[superuser]
+enabled = true
+username = "admin"
+password = "admin"
+email = "admin@example.com"

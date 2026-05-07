@@ -1,0 +1,43 @@
+# Adds Celery worker (and optionally beat) to the minimal config.
+# Spawn behavior is controlled per-run with --with-celery / --no-celery and
+# --with-celery-beat / --no-celery-beat.
+
+project_slug = "myproject"
+manage_py = "manage.py"
+
+[python]
+executable = "auto"
+
+[postgres]
+image = "postgres:16"
+user = "myproject"
+password = "password"
+db = "myproject"
+
+[redis]
+image = "redis:7-alpine"
+
+[django]
+runserver_bind = "127.0.0.1"
+runserver_display_host = "localhost"
+browser_probe_path = "/admin/login/"
+migrate = true
+
+[superuser]
+enabled = true
+username = "admin"
+password = "admin"
+email = "admin@example.com"
+
+[celery]
+app = "myproject.celery"
+enabled = true
+worker_pool = "solo"          # safe default on macOS (fork issues)
+worker_log_level = "info"
+with_beat = false
+beat_log_level = "info"
+
+[env]
+# Pass DATABASE_URL to settings.py so dj-database-url can parse it.
+database_url = "DATABASE_URL"
+redis_url = "CELERY_BROKER_URL"
