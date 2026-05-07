@@ -14,5 +14,15 @@ companion ``django-dev-helpers`` package and integrate through a documented
 ``DEV_HELPERS_*`` env-var contract.
 """
 
-__version__ = "0.3.0"
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("run-site")
+except PackageNotFoundError:
+    # Package metadata is unavailable when running from a source tree that
+    # has not been installed (e.g. plain `python -m run_site` without
+    # `pip install -e .`). Fall back to a sentinel rather than crashing.
+    __version__ = "0.0.0+unknown"
+
 __all__ = ["__version__"]

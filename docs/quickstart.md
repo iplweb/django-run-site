@@ -11,6 +11,15 @@ pipx install run-site
 uv tool install run-site
 ```
 
+You can also try run-site against any public repo without installing it
+first:
+
+```bash
+uv tool run run-site run --from-git URL --yes
+```
+
+See [from-git.md](from-git.md) for the full story.
+
 You'll also need:
 
 - **Docker** running locally (Docker Desktop, colima, podman with the docker
@@ -97,15 +106,23 @@ run-site run
 
 That will:
 
-1. Spin up Postgres + Redis in containers on free ports.
+1. Spin up Postgres + Redis in containers on **free ports** (so multiple
+   sites can run side-by-side with no port collisions).
 2. Run `manage.py migrate --noinput`.
 3. Create or update the `admin/admin` superuser.
-4. Start `runserver` on a free port.
-5. Multiplex container + runserver logs into your terminal.
-6. Open your browser on the homepage.
+4. Drop a `.run-site-config` TOML at the project root with the live
+   ports + connection URLs (read by `django-dev-helpers` and any other
+   tooling). Removed on clean shutdown.
+5. Start `runserver` on a free port.
+6. Print the **banner** with admin URL, copy-paste `psql` command, libpq
+   env-var line, dev superuser credentials, container lifecycle info,
+   and the sidecar path.
+7. Multiplex container + runserver logs into your terminal.
+8. Open your browser on the homepage.
 
 Press **Ctrl-C** to shut everything down. The CLI stops the containers
-unless you passed `--reuse`.
+and removes `.run-site-config` unless you passed `--reuse` (which keeps
+the containers; the sidecar is still removed because it's per-run).
 
 ## 4. Reuse containers between runs
 

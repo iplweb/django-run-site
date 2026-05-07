@@ -84,6 +84,46 @@ cycle.
 | `DEV_HELPERS_REDIS_PORT` | host-side port of Redis container |
 | `DEV_HELPERS_PROJECT_ROOT` | absolute project root |
 
+### Second integration path: `.run-site-config`
+
+In addition to env vars, `run-site` writes a TOML sidecar to the project
+root **before** `runserver` starts:
+
+```toml
+project_slug = "myproj"
+generated_at = "2026-05-07T13:42:11+00:00"
+
+[web]
+host = "localhost"
+port = 54812
+url = "http://localhost:54812/"
+
+[postgres]
+host = "127.0.0.1"
+port = 54321
+db = "myproj"
+user = "myproj"
+password = "password"
+url = "postgres://myproj:password@127.0.0.1:54321/myproj"
+
+[redis]
+host = "127.0.0.1"
+port = 16379
+db = 0
+url = "redis://127.0.0.1:16379/0"
+
+[celery]
+enabled = true
+app = "myproj.celery"
+```
+
+`django-dev-helpers` (or any other tool — editor plugins, AI coding
+agents, scripts you write) can read this from `<project_root>/.run-site-config`
+in addition to the env-var contract. The file is written before
+`pre_serve` hooks and before `runserver`, so it's visible from
+`AppConfig.ready()`. It's removed on clean shutdown. Add
+`.run-site-config` to your `.gitignore` — it's regenerated per-run.
+
 ### Why double-set with `[env]`?
 
 Project-side `settings.py` reads its own env-var names (e.g.

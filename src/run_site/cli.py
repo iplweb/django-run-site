@@ -665,15 +665,17 @@ def _execute_run(
         sys.stdout.write(banner)
         sys.stdout.flush()
 
-        # Spawn runserver and friends.
+        # Spawn the web process — runserver by default, or whatever
+        # `[django].web_command` overrides it with (daphne, gunicorn, …).
+        web_argv = _build_web_argv(
+            config=config,
+            python=python,
+            manage_py=manage_py,
+            runserver_port=runserver_port,
+        )
         proc_group.spawn(
             name="web",
-            argv=(
-                *python,
-                str(manage_py),
-                "runserver",
-                f"{config.django.runserver_bind}:{runserver_port}",
-            ),
+            argv=web_argv,
             cwd=config.project_root,
             env=env_for_runserver,
             color="cyan",
@@ -845,6 +847,43 @@ def _probe_and_open_browser(url: str, port: int, config: RunSiteConfig, no_brows
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _build_web_argv(
+    *,
+    config: RunSiteConfig,
+    python: tuple[str, ...],
+    manage_py: Path,
+    runserver_port: int,
+) -> tuple[str, ...]:
+    """Pick the argv for the web process.
+
+    Default: ``<python> manage.py runserver <bind>:<port>`` — Django's
+    builtin dev server with autoreload.
+
+    With ``[django].web_command`` set: substitute ``{python}``,
+    ``{manage_py}``, ``{manage_dir}``, ``{project_root}``, ``{port}``,
+    ``{bind}`` into the configured tokens and run that instead. Useful
+    for ASGI servers (daphne, uvicorn) or production-style runners
+    (gunicorn) when ``runserver`` isn't enough.
+    """
+
+    if config.django.web_command is None:
+        return (
+            *python,
+            str(manage_py),
+            "runserver",
+            f"{config.django.runserver_bind}:{runserver_port}",
+        )
+    tmpl = TemplateContext(
+        python=python,
+        manage_py=manage_py,
+        manage_dir=manage_py.parent,
+        project_root=config.project_root,
+        port=runserver_port,
+        extras={"bind": config.django.runserver_bind},
+    )
+    return tmpl.expand(config.django.web_command)
 
 
 def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> RunSiteConfig:

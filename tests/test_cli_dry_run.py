@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from run_site.cli import main
+from run_site.cli import _build_web_argv, main
+from run_site.config import RunSiteConfig
 
 
 def run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
@@ -18,7 +20,7 @@ def run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, s
 def test_version_prints_and_exits(capsys) -> None:
     code, out, _ = run_cli(["--version"], capsys)
     assert code == 0
-    assert "0.3.0" in out
+    assert "0.4.0" in out
 
 
 def test_top_level_help(capsys) -> None:
@@ -84,3 +86,89 @@ def test_mutually_exclusive_source_flags(tmp_path: Path, monkeypatch, capsys) ->
     )
     assert code != 0
     assert "mutually exclusive" in err
+
+
+# ---------------------------------------------------------------------------
+# _build_web_argv — runserver default + [django].web_command override
+# ---------------------------------------------------------------------------
+
+
+def test_build_web_argv_defaults_to_runserver(minimal_config: RunSiteConfig) -> None:
+    """Without web_command, the orchestrator runs Django's builtin server."""
+
+    argv = _build_web_argv(
+        config=minimal_config,
+        python=("/usr/bin/python",),
+        manage_py=Path("/proj/manage.py"),
+        runserver_port=8123,
+    )
+    assert argv == (
+        "/usr/bin/python",
+        "/proj/manage.py",
+        "runserver",
+        "127.0.0.1:8123",
+    )
+
+
+def test_build_web_argv_uses_override_with_substitution(
+    minimal_config: RunSiteConfig,
+) -> None:
+    """web_command tokens go through the same substitution as
+    [[extra_processes]].command — including a new ``{bind}``."""
+
+    cfg = replace(
+        minimal_config,
+        django=replace(
+            minimal_config.django,
+            web_command=(
+                "{python}",
+                "-m",
+                "daphne",
+                "-b",
+                "{bind}",
+                "-p",
+                "{port}",
+                "demo.asgi:application",
+            ),
+        ),
+    )
+    argv = _build_web_argv(
+        config=cfg,
+        python=("/usr/bin/python",),
+        manage_py=Path("/proj/manage.py"),
+        runserver_port=8123,
+    )
+    assert argv == (
+        "/usr/bin/python",
+        "-m",
+        "daphne",
+        "-b",
+        "127.0.0.1",
+        "-p",
+        "8123",
+        "demo.asgi:application",
+    )
+
+
+def test_build_web_argv_inline_expands_multitoken_python(
+    minimal_config: RunSiteConfig,
+) -> None:
+    """``{python}`` alone in a token expands to multiple argv entries —
+    same rule as extra_processes — so ``["uv", "run", "python"]`` doesn't
+    end up shell-quoted."""
+
+    cfg = replace(
+        minimal_config,
+        django=replace(
+            minimal_config.django,
+            web_command=("{python}", "-m", "uvicorn", "demo.asgi:application"),
+        ),
+    )
+    argv = _build_web_argv(
+        config=cfg,
+        python=("uv", "run", "python"),
+        manage_py=Path("/proj/manage.py"),
+        runserver_port=9000,
+    )
+    assert argv[:3] == ("uv", "run", "python")
+    assert argv[3:] == ("-m", "uvicorn", "demo.asgi:application")

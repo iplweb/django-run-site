@@ -17,6 +17,42 @@ def test_loads_minimal_runsite_toml(tmp_path: Path, minimal_toml: Path) -> None:
     assert config.redis.image == "redis:7-alpine"
     assert config.superuser.username == "admin"
     assert config.django.runserver_display_host == "localhost"
+    assert config.django.web_command is None  # default = use runserver
+
+
+def test_django_web_command_parsed(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text(
+        'project_slug = "demo"\n'
+        "[django]\n"
+        'web_command = ["{python}", "-m", "daphne", "-b", "{bind}", '
+        '"-p", "{port}", "demo.asgi:application"]\n'
+    )
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.django.web_command == (
+        "{python}",
+        "-m",
+        "daphne",
+        "-b",
+        "{bind}",
+        "-p",
+        "{port}",
+        "demo.asgi:application",
+    )
+
+
+def test_django_web_command_must_be_list_of_strings(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[django]\nweb_command = "daphne"\n')
+    with pytest.raises(ConfigError, match="must be a list of strings"):
+        load_config(config_path=cfg, project_root=tmp_path)
+
+
+def test_django_web_command_must_not_be_empty(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[django]\nweb_command = []\n')
+    with pytest.raises(ConfigError, match="must not be empty"):
+        load_config(config_path=cfg, project_root=tmp_path)
 
 
 def test_loads_pyproject_section(tmp_path: Path) -> None:

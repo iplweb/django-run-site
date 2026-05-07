@@ -21,7 +21,7 @@ start, after migrate, before `runserver`, etc. Two flavors:
 | `post_dump` | After the dump is loaded. |
 | `post_migrate` | After `manage.py migrate`. |
 | `post_superuser` | After superuser created/updated. Skipped when superuser is disabled. |
-| `pre_serve` | Just before `runserver` spawns. |
+| `pre_serve` | Just before `runserver` spawns. The `.run-site-config` sidecar (live ports + URLs) is already written by this stage — pre_serve hooks can read it directly. |
 | `post_stop` | Best-effort cleanup. Errors are logged, not fatal. |
 
 ### `pre_dump` quirk

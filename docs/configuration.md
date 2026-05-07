@@ -28,14 +28,31 @@ How to invoke the project's Python interpreter.
 executable = "auto"  # default; runs the resolution chain
 # or
 executable = ".venv/bin/python"
-# or
-command = ["uv", "run", "python"]
+# or — the form `run-site init` writes when uv is on PATH:
+command = ["uv", "run", "--no-sync", "python"]
 ```
 
 `executable` and `command` are mutually exclusive (except `executable = "auto"`,
 which means "ignore me, use the chain"). With `command`, the CLI prepends
 those tokens to every Python invocation — useful when you'd rather use
 `uv run` than activate a venv.
+
+`--no-sync` matters: run-site already runs `uv sync` once during venv
+setup, so re-syncing on every invocation just slows things down.
+
+The `"auto"` chain (in order):
+
+1. `RUN_SITE_PYTHON` env var.
+2. `<project_root>/.venv/bin/python` (preferred over `$VIRTUAL_ENV` so
+   `uv tool run run-site` doesn't pick the run-site tool's own venv).
+3. `$VIRTUAL_ENV/bin/python` (ambient activated venv).
+4. `uv run python` (only when `uv.lock` exists and `uv` is on PATH).
+5. `sys.executable`.
+
+Symlinks in `.venv/bin/python` are **not** resolved — Python detects venv
+membership from the invocation path, and uv creates `bin/python` as a
+symlink to the upstream interpreter. Resolving it would land outside the
+venv and lose `site-packages`.
 
 ## `[postgres]`
 
@@ -147,11 +164,58 @@ runserver_display_host = "localhost"
 browser_probe_path = "/admin/login/"
 migrate = true
 probe_timeout = 60.0
+# Optional: replace the web process. Default = manage.py runserver.
+# web_command = ["{python}", "-m", "daphne", "-b", "{bind}", "-p", "{port}", "myproject.asgi:application"]
 ```
 
 `runserver_display_host` differs from `runserver_bind` so URLs stay clean:
 defaulting to `localhost` avoids Safari's HSTS cache being primed by IP
 literals.
+
+### Overriding the web process
+
+When `runserver` isn't enough — Django Channels needs ASGI, you want to
+test under gunicorn, etc. — set `web_command`. Tokens go through the
+same template substitution as `[[extra_processes]].command`:
+
+| Variable | Value |
+|---|---|
+| `{python}` | resolved Python command (multi-token-aware: `["uv","run","python"]` expands inline) |
+| `{manage_py}` | absolute manage.py path |
+| `{manage_dir}` | manage.py's directory |
+| `{project_root}` | project root |
+| `{port}` | runserver port (the same free port the orchestrator picked) |
+| `{bind}` | `runserver_bind` value (`127.0.0.1` by default) |
+
+```toml
+# Daphne (ASGI):
+[django]
+web_command = [
+    "{python}", "-m", "daphne",
+    "-b", "{bind}", "-p", "{port}",
+    "myproject.asgi:application",
+]
+
+# Uvicorn (ASGI, with autoreload):
+[django]
+web_command = [
+    "{python}", "-m", "uvicorn", "myproject.asgi:application",
+    "--host", "{bind}", "--port", "{port}",
+    "--reload",
+]
+
+# Gunicorn (sync WSGI):
+[django]
+web_command = [
+    "{python}", "-m", "gunicorn", "myproject.wsgi",
+    "-b", "{bind}:{port}", "--reload",
+]
+```
+
+Tradeoffs: you lose `runserver`'s autoreload (each replacement has its
+own; daphne has none, uvicorn needs `--reload`, gunicorn needs `--reload`).
+The browser probe + auto-open still target `http://<display_host>:<port>/`,
+so the banner's `App:` URL stays meaningful.
 
 ## `[superuser]`
 
@@ -226,8 +290,58 @@ show_db_credentials = true
 suggest_dev_helpers = true
 ```
 
-`show_db_credentials = false` hides the password line. Doctor warns when
-your password looks production-y.
+The banner shows, in order: project + root, source (if `--from-git` /
+`--from-path`), `App:` / `Admin:` URLs, `Superuser:` (with credentials
+when known), `Postgres:` (host:port + db/user/password + a copy-paste
+`psql` command + a libpq `PGHOST=… PGPORT=…` line), `Redis:`,
+`Lifecycle:` (whether containers are removed on exit or kept under
+`--reuse`), `Celery:` (with an enable hint when disabled), `Dump:` (when
+applicable), and `Sidecar:` (path to `.run-site-config`).
+
+`show_db_credentials = false` hides every secret in the banner — the
+Postgres password line, the `PGPASSWORD=…` in the psql command, the
+libpq env line, and the superuser password.
+
+`suggest_dev_helpers = false` removes the "[tip] Install
+django-dev-helpers" footer when the helpers app isn't installed.
+
+## `.run-site-config` — the runtime sidecar
+
+While the stack is running, `run-site` drops a TOML file at the project
+root with the live ports and connection URLs:
+
+```toml
+project_slug = "myproj"
+generated_at = "2026-05-07T13:42:11+00:00"
+
+[web]
+host = "localhost"
+port = 54812
+url = "http://localhost:54812/"
+
+[postgres]
+host = "127.0.0.1"
+port = 54321
+db = "myproj"
+user = "myproj"
+password = "password"
+url = "postgres://myproj:password@127.0.0.1:54321/myproj"
+
+[redis]
+host = "127.0.0.1"
+port = 16379
+db = 0
+url = "redis://127.0.0.1:16379/0"
+
+[celery]
+enabled = true
+app = "myproj.celery"
+```
+
+It's written **before** `pre_serve` hooks (so they can read it) and
+**before** `runserver` starts (so `django-dev-helpers` can read it from
+`AppConfig.ready()`). It's removed on clean shutdown. Add
+`.run-site-config` to your `.gitignore` — it's regenerated per-run.
 
 ## `[source]`
 

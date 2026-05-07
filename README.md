@@ -1,18 +1,30 @@
 # run-site
 
-> **Like [`uvx`](https://docs.astral.sh/uv/guides/tools/), but for
-> full-fledged\* Django sites.** Point it at a Git URL and you get a
-> running stack — Postgres, Redis, migrate, superuser, runserver — without
-> ever cloning, building a venv, or editing settings by hand.
+> **[`uvx`](https://docs.astral.sh/uv/guides/tools/)-wannabe for
+> full-fledged\* Django sites.**
 >
-> \* *Full-fledged* = a Django project that expects PostgreSQL, Redis, and
-> some kind of seed dump for the database — not a one-file
+> Run several Django sites side-by-side — one per worktree, branch, or
+> checkout — each with its own PostgreSQL and Redis on
+> automatically-picked, non-conflicting ports. The current stack's
+> ports + connection URLs are written to `.run-site-config` (a TOML
+> dotfile at the project root) so both **you** and your **coding
+> agent** can talk to the right services without fighting over `5432`
+> and `6379` or parsing logs to find them.
+>
+> Primary use cases: test automation across branches, multi-agent
+> coding workflows, comparing two versions of a site at once. As a
+> bonus, the same engine pulls projects straight from a Git URL with
+> no manual `git clone` / venv / `uv sync` — see
+> [Run from a Git URL](#run-from-a-git-url) below.
+>
+> \* *Full-fledged* = a Django project that expects PostgreSQL, Redis,
+> and some kind of seed dump for the database — not a one-file
 > `manage.py runserver` toy. **This is the goal we're aiming at; we're
 > not fully there yet** — current focus is `--from-git` /
-> `--from-path` ergonomics, dump-restore strategies, the runtime banner,
-> and the `.run-site-config` sidecar. See [CHANGELOG.md](CHANGELOG.md)
-> for what's shipping and the [Status](#status) section for current
-> rough edges.
+> `--from-path` ergonomics, dump-restore strategies, the runtime
+> banner, and the `.run-site-config` sidecar. See
+> [CHANGELOG.md](CHANGELOG.md) for what's shipping and the
+> [Status](#status) section for current rough edges.
 
 Pure CLI orchestrator for local Django development. PostgreSQL & Redis
 testcontainers + dump load + local `runserver`/Celery + log multiplexer +
@@ -218,6 +230,188 @@ run-site run --reuse
 Stable container names — `<project_slug>-runsite-pg` and `-redis` — survive
 between runs so you don't reload the dump each time. The banner's
 `Lifecycle:` line tells you which mode you're in and how to clean up.
+
+## Common recipes
+
+### Restore a PostgreSQL dump before the site starts
+
+Dump restoration is a **first-class feature** — not a hook. Point
+`[dump]` at any `.sql`, `.sql.gz`, `.dump`, or `.pgdump` file and
+`run-site` picks the right loader strategy automatically:
+
+```toml
+[dump]
+default_path = "fixtures/baseline.sql"   # relative to project root
+strategy = "auto"                        # init-script for fresh PG, post-start otherwise
+restore_jobs = "auto"                    # parallelism for pg_restore (auto = min(8, cpu_count))
+fail_fast = true
+```
+
+| Strategy | When to use it |
+|---|---|
+| `auto` (default) | Plain `.sql` + fresh container → init-script. Otherwise → post-start. Reused container → skipped (existing data preserved). |
+| `init-script` | Force PG to load the dump from `/docker-entrypoint-initdb.d/`. Only works for `.sql` on freshly-created containers. |
+| `post-start` | Always restore via `psql` / `pg_restore` after PG is up. Handles every supported format. |
+
+Override per-run from the CLI:
+
+```bash
+run-site run --from-dump fixtures/2026-05-07.sql.gz
+run-site run --no-dump                    # skip the restore for this run
+run-site run --dump-strategy=post-start   # force post-start, even on a reused container (nukes data)
+```
+
+The full reference lives in [docs/configuration.md#dump](docs/configuration.md#dump).
+
+### Lifecycle hooks — pre/post each stage
+
+Hooks let you wedge custom logic into the orchestrator's flow. Two
+flavors: `type = "command"` (regular subprocess) and `type = "django"`
+(through `manage.py shell -c`, with a `ctx` dict containing the live
+ports and credentials).
+
+The available stages, in order:
+
+```
+pre_containers → post_containers → pre_dump → post_dump → post_migrate
+                                                              ↓
+                                                       post_superuser → pre_serve
+                                                                            ↓
+                                                                       (runserver runs)
+                                                                            ↓
+                                                                        post_stop
+```
+
+Note: there is **no** `pre_migrate` stage — use `post_dump` (it runs
+right before migrate). And there is **no** `post_serve` stage —
+`runserver` blocks until shutdown, so the closest is `post_stop`
+(best-effort cleanup; errors get logged, not fatal).
+
+#### `pre_containers` — build assets before anything starts
+
+```toml
+[[hooks.pre_containers]]
+type = "command"
+command = ["make", "assets"]
+timeout = 300
+cli_disable_flag = "--skip-assets"   # `run-site run --skip-assets` skips this run
+```
+
+#### `post_dump` — patch the freshly-loaded baseline
+
+Right after the dump loads, before `migrate`:
+
+```toml
+[[hooks.post_dump]]
+type = "django"
+callable = "myproject.runsite_hooks:rotate_dev_secrets"
+timeout = 30
+```
+
+```python
+# myproject/runsite_hooks.py
+def rotate_dev_secrets(ctx: dict) -> None:
+    """Replace any production-looking secrets the dump may have shipped
+    with safe dev placeholders. Runs once per restore."""
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    User.objects.filter(is_superuser=True).update(
+        password="!unusable",  # force re-login through the dev superuser flow
+    )
+```
+
+#### `post_migrate` — load fixtures or run management commands
+
+```toml
+[[hooks.post_migrate]]
+type = "django"
+callable = "myproject.runsite_hooks:load_dev_fixtures"
+```
+
+```python
+def load_dev_fixtures(ctx: dict) -> None:
+    from django.core.management import call_command
+    call_command("loaddata", "fixtures/dev_seed.json", verbosity=0)
+```
+
+#### `post_superuser` — clean up auth quirks
+
+```toml
+[[hooks.post_superuser]]
+type = "django"
+callable = "myproject.runsite_hooks:clear_password_policy"
+```
+
+```python
+def clear_password_policy(ctx: dict) -> None:
+    from password_policies.models import PasswordChangeRequired
+    PasswordChangeRequired.objects.filter(
+        user__username=ctx["superuser"]["username"]
+    ).delete()
+```
+
+#### `pre_serve` — last call before runserver
+
+The `.run-site-config` sidecar is already on disk by this stage, so a
+hook can read it.
+
+```toml
+[[hooks.pre_serve]]
+type = "django"
+callable = "myproject.runsite_hooks:warm_caches"
+timeout = 60
+```
+
+```python
+def warm_caches(ctx: dict) -> None:
+    """Pre-fill the homepage cache so the first request is fast."""
+    from django.test import Client
+    Client().get("/")
+```
+
+#### Custom CLI flag for a hook
+
+Add `[[hooks.<stage>.cli_args]]` to register a flag dynamically — the
+parser is rebuilt after config load so `--help` shows it:
+
+```toml
+[[hooks.post_migrate]]
+type = "django"
+callable = "myproject.runsite_hooks:fetch_token"
+timeout = 60
+
+[[hooks.post_migrate.cli_args]]
+flag = "--get-token-from"
+dest = "ssh_source"
+metavar = "USER@HOST"
+help = "Pull a deploy token from this SSH host after migrations"
+```
+
+```bash
+run-site run --get-token-from admin@bpp-prod
+```
+
+```python
+def fetch_token(ctx: dict) -> None:
+    source = ctx["opts"].get("ssh_source")
+    if not source:
+        return  # flag not passed — no-op
+    # … scp / ssh whatever you need …
+```
+
+#### `post_stop` — best-effort cleanup
+
+```toml
+[[hooks.post_stop]]
+type = "command"
+command = ["bash", "-lc", "rm -rf .runtime-cache/"]
+```
+
+Errors here are **logged, not fatal** — `post_stop` shouldn't be able
+to break a clean shutdown.
+
+Full reference + the `ctx` dict schema: [docs/hooks.md](docs/hooks.md).
+A real-world hook setup: [examples/runsite.bpp.toml](examples/runsite.bpp.toml).
 
 ## What's in the box
 

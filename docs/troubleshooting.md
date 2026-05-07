@@ -29,20 +29,66 @@ error: Could not find manage.py in /path/. Set --manage-py or
 
 Resolution chain:
 
-1. `--manage-py PATH`
-2. `manage_py = "..."` in config
-3. `<project_root>/src/manage.py`
-4. `<project_root>/manage.py`
+1. `--manage-py PATH` (relative paths anchor to the **project root**, not
+   your CWD — important under `--from-git`).
+2. `manage_py = "..."` in config (also relative to project root).
+3. Auto-scan: `manage.py` → `src/manage.py` → one level deep
+   (`<dir>/manage.py`) → two levels deep (`<dir>/<sub>/manage.py`),
+   skipping `.venv`, `node_modules`, `__pycache__`, `build`, `dist`,
+   `docs`, `static`, `media`, `egg-info`, `.git`, `.tox`, etc.
+4. Tie-breaker: when several `manage.py` files match, those that
+   actually `import django` (AST-checked) are preferred. If multiple
+   pass that filter, the run aborts with the candidate list and asks
+   for `--manage-py`.
 
-If your `manage.py` lives somewhere unusual, set `manage_py` in
-`runsite.toml`.
+## Multiple Django manage.py files found
+
+```
+error: Multiple Django manage.py files found under <root>:
+demo/manage.py, test_project/manage.py. Pass --manage-py or set
+'manage_py' in runsite.toml to disambiguate.
+```
+
+Some Django package repos ship more than one usable `manage.py` (e.g. a
+demo + a test project). Pick one explicitly:
+
+```bash
+run-site run --from-git URL --manage-py test_project/manage.py
+```
+
+…or commit a `runsite.toml` to the repo with `manage_py = "..."` set.
 
 ## `[python].executable=...` does not exist
 
 The path is interpreted **relative to the project root**, not your CWD.
 Either give an absolute path or set `executable = "auto"` and let the
-discovery chain pick the right one (`$VIRTUAL_ENV`, `.venv/bin/python`,
-`uv run python`, `sys.executable`).
+discovery chain pick the right one. The current order is:
+
+1. `RUN_SITE_PYTHON` env var (explicit override).
+2. `<project_root>/.venv/bin/python` (preferred — see next entry for
+   why this beats `$VIRTUAL_ENV`).
+3. `$VIRTUAL_ENV/bin/python` (the venv you've activated, if any).
+4. `uv run python` (only when `uv.lock` is present and `uv` is on PATH).
+5. `sys.executable` (whatever interpreter is running run-site).
+
+## `ModuleNotFoundError: No module named 'django'` from `runserver`/`migrate`
+
+Two causes, both common under `uv tool run run-site` / `pipx run`:
+
+1. **Wrong venv picked.** The wrapper sets `VIRTUAL_ENV` to the *tool's*
+   venv (which has run-site but not Django). run-site preferentially
+   uses `<project_root>/.venv/bin/python` over `$VIRTUAL_ENV` to avoid
+   this — but if your project doesn't have a `.venv`, the wrapper's
+   venv wins. Run `--from-git` once to let run-site create the project
+   venv, or activate the right venv yourself before running.
+2. **`Path.resolve()`-ing a venv symlink.** uv creates `.venv/bin/python`
+   as a symlink to the upstream interpreter; resolving the symlink
+   gives a path with no `pyvenv.cfg` in scope, so CPython runs in
+   non-venv mode (no project deps on `sys.path`). run-site uses
+   `os.path.abspath` (collapses `..` / `.` but does not follow
+   symlinks), which is what every test exercises. If you wrote a
+   custom `[python].executable` or hook that calls `Path(...).resolve()`,
+   you'll see this error — switch to `os.path.abspath`.
 
 ## Port already in use
 

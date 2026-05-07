@@ -3,10 +3,14 @@
 ## TL;DR
 
 ```bash
-# Clone, set up venv, install deps, then run:
+# Zero-install: try a project without installing run-site first.
+# `--yes` skips the cloning prompt — copy-paste-safe in tutorials/CI.
+uv tool run run-site run --from-git git@github.com:mpasternak/django-multiseek.git --yes
+
+# Same effect once run-site is installed:
 run-site run --from-git https://github.com/iplweb/bpp.git --branch main
 
-# Same, but checkout a tag:
+# Pin to a tag:
 run-site run --from-git https://github.com/iplweb/bpp.git --tag v1.0
 
 # Or a specific commit:
@@ -67,6 +71,12 @@ run-site doctor --from-git https://github.com/iplweb/bpp.git
      reinstall.
 
 6. **Run as usual** — discover `manage.py`, start containers, etc.
+   `manage.py` auto-detection scans the repo root, `src/`, and one or
+   two directories deep (e.g. `test_project/manage.py`,
+   `tests/test_project/manage.py`); when several `manage.py` files
+   exist, those that actually `import django` are preferred. Pass
+   `--manage-py PATH` (relative paths anchor to the cloned root, not
+   your CWD) to override.
 
 ## Security
 

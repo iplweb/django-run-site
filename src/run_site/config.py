@@ -95,6 +95,12 @@ class DjangoConfig:
     browser_probe_path: str = "/admin/login/"
     migrate: bool = True
     probe_timeout: float = 60.0
+    # Override the web process. When None, the orchestrator runs
+    # ``<python> manage.py runserver <bind>:<port>``. When set, the
+    # tokens go through the same template-substitution as
+    # ``[[extra_processes]].command`` (``{python}``, ``{manage_py}``,
+    # ``{manage_dir}``, ``{project_root}``, ``{port}``, ``{bind}``).
+    web_command: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -399,12 +405,23 @@ def _build_django(raw: Mapping[str, Any]) -> DjangoConfig:
     timeout = raw.get("probe_timeout", 60.0)
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise ConfigError("[django].probe_timeout must be a positive number")
+    web_command_raw = raw.get("web_command")
+    web_command: tuple[str, ...] | None = None
+    if web_command_raw is not None:
+        if not isinstance(web_command_raw, list) or not all(
+            isinstance(x, str) for x in web_command_raw
+        ):
+            raise ConfigError("[django].web_command must be a list of strings")
+        if not web_command_raw:
+            raise ConfigError("[django].web_command must not be empty")
+        web_command = tuple(web_command_raw)
     return DjangoConfig(
         runserver_bind=_str(raw, "runserver_bind", default="127.0.0.1"),
         runserver_display_host=_str(raw, "runserver_display_host", default="localhost"),
         browser_probe_path=_str(raw, "browser_probe_path", default="/admin/login/"),
         migrate=_bool(raw, "migrate", default=True),
         probe_timeout=float(timeout),
+        web_command=web_command,
     )
 
 
