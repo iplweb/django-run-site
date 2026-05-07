@@ -1,4 +1,4 @@
-"""Database dump format detection and restore strategies (§12).
+"""Database dump format detection and restore strategies.
 
 The actual restore is split between two phases of the run flow:
 
@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from django_run_site.config import RunSiteConfig
-from django_run_site.errors import DumpError
+from run_site.config import RunSiteConfig
+from run_site.errors import DumpError
 
 
 class DumpFormat(Enum):

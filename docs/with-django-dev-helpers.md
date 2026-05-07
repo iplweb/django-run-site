@@ -1,6 +1,6 @@
 # Integration with `django-dev-helpers`
 
-`django-run-site` is a pure CLI orchestrator — it doesn't import Django,
+`run-site` is a pure CLI orchestrator — it doesn't import Django,
 doesn't modify your `urls.py`, doesn't write dotfiles, doesn't open
 autologin URLs. Those features live in a separate package,
 [`django-dev-helpers`](https://github.com/iplweb/django-dev-helpers), which
@@ -13,7 +13,7 @@ imports the other; you can use either standalone.
 
 ```bash
 # CLI orchestrator
-uv tool install django-run-site
+uv tool install run-site
 
 # Django app (in your project's dev deps)
 uv add django-dev-helpers --group dev
@@ -39,7 +39,7 @@ urlpatterns = [
 
 ## What each side does
 
-### `django-run-site` (orchestrator)
+### `run-site` (orchestrator)
 
 - Generates a per-run autologin token (`secrets.token_urlsafe(32)`).
 - Sets `DEV_HELPERS_*` env vars on the runserver subprocess (see below).
@@ -63,7 +63,7 @@ urlpatterns = [
 - Optionally checks `.gitignore` for the dotfiles and adds them.
 - Cleans up dotfiles on SIGTERM / atexit.
 
-## The env-var contract (§13.2)
+## The env-var contract
 
 The orchestrator **always** sets these on the `runserver` subprocess —
 regardless of your `[env]` mapping in `runsite.toml`. Names are stable

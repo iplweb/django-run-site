@@ -1,7 +1,6 @@
 # BPP-style configuration: custom Postgres image, baseline dump, hooks
-# with dynamic CLI args, project-specific env-var names. Mirrors §6.2 of the
-# spec. Useful as a reference for what a full real-world config can look
-# like.
+# with dynamic CLI args, project-specific env-var names. A reference for
+# what a full real-world config can look like.
 
 project_slug = "bpp"
 manage_py = "src/manage.py"

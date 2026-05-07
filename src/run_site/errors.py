@@ -1,4 +1,4 @@
-"""Exception hierarchy for django-run-site.
+"""Exception hierarchy for run-site.
 
 All user-facing errors derive from :class:`RunSiteError`. The CLI catches
 this base class at the top level and prints a clean message instead of a

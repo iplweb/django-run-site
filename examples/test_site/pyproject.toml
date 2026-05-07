@@ -1,7 +1,7 @@
 [project]
-name = "django-run-site-test-site"
+name = "run-site-test-site"
 version = "0.0.0"
-description = "Tiny Django app used by django-run-site integration tests."
+description = "Tiny Django app used by run-site integration tests."
 requires-python = ">=3.11"
 dependencies = [
     "django>=5.2,<7",

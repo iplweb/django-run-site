@@ -1,4 +1,4 @@
-"""Log multiplexer prefix / threading tests (§18.1)."""
+"""Log multiplexer prefix / threading tests."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from django_run_site.log_multiplexer import LogMultiplexer, captured_multiplexer
+from run_site.log_multiplexer import LogMultiplexer, captured_multiplexer
 
 
 def test_write_uses_prefix() -> None:

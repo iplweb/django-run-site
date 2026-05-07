@@ -1,7 +1,7 @@
-"""Example hooks loaded by django-run-site for the test_site demo project.
+"""Example hooks loaded by run-site for the test_site demo project.
 
 These are referenced from ``runsite.toml`` and the BPP-style example config.
-A hook callable receives a single ``ctx`` dict (see §17.5 of the spec).
+A hook callable receives a single ``ctx`` dict — see ``docs/hooks.md``.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Load and validate ``runsite.toml`` / ``[tool.django-run-site]`` config.
+"""Load and validate ``runsite.toml`` / ``[tool.run-site]`` config.
 
 This module is intentionally side-effect-free. ``load_config`` returns a
 fully-validated :class:`RunSiteConfig` dataclass; CLI flags are merged on
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from django_run_site.errors import ConfigError
+from run_site.errors import ConfigError
 
 DumpStrategy = Literal["auto", "init-script", "post-start"]
 RyukMode = Literal["auto", "true", "false"]
@@ -44,7 +44,7 @@ DRIVER_RE = re.compile(r"^(\+[A-Za-z0-9_]+|q[A-Za-z0-9_]*)?$")
 
 @dataclass(frozen=True)
 class PythonConfig:
-    """Resolution policy for the local Python interpreter (§7.3)."""
+    """Resolution policy for the local Python interpreter."""
 
     executable: str | None = "auto"
     command: tuple[str, ...] | None = None
@@ -82,7 +82,7 @@ class DumpConfig:
 
 @dataclass(frozen=True)
 class EnvConfig:
-    """Project-side env mapping (§13.1) plus arbitrary extras."""
+    """Project-side env mapping plus arbitrary extras."""
 
     mapping: Mapping[str, str | None] = field(default_factory=dict)
     extra: Mapping[str, str] = field(default_factory=dict)
@@ -152,7 +152,7 @@ class HookConfig:
 
 @dataclass(frozen=True)
 class BannerConfig:
-    title: str = "django-run-site is running"
+    title: str = "run-site is running"
     show_db_credentials: bool = True
     suggest_dev_helpers: bool = True
 
@@ -202,7 +202,7 @@ class RunSiteConfig:
 
 def find_config(start: Path) -> Path | None:
     """Walk parents of *start* looking for ``runsite.toml`` or
-    ``[tool.django-run-site]`` in ``pyproject.toml``."""
+    ``[tool.run-site]`` in ``pyproject.toml``."""
 
     for candidate in [start, *start.parents]:
         runsite = candidate / "runsite.toml"
@@ -215,7 +215,7 @@ def find_config(start: Path) -> Path | None:
                     data = tomllib.load(fh)
             except tomllib.TOMLDecodeError:
                 continue
-            if "tool" in data and "django-run-site" in data["tool"]:
+            if "tool" in data and "run-site" in data["tool"]:
                 return pyproj
     return None
 
@@ -245,10 +245,10 @@ def load_config(
 
 
 def _read_toml_section(path: Path) -> Mapping[str, Any]:
-    """Load *path* and return its django-run-site config section.
+    """Load *path* and return its run-site config section.
 
     For ``runsite.toml`` it's the whole file. For ``pyproject.toml`` it's
-    ``[tool.django-run-site]``.
+    ``[tool.run-site]``.
     """
 
     try:
@@ -258,7 +258,7 @@ def _read_toml_section(path: Path) -> Mapping[str, Any]:
         raise ConfigError(f"Invalid TOML in {path}: {exc}") from exc
 
     if path.name == "pyproject.toml":
-        return data.get("tool", {}).get("django-run-site", {})
+        return data.get("tool", {}).get("run-site", {})
     return data
 
 
@@ -593,7 +593,7 @@ def _build_hook(
 
 def _build_banner(raw: Mapping[str, Any]) -> BannerConfig:
     return BannerConfig(
-        title=_str(raw, "title", default="django-run-site is running"),
+        title=_str(raw, "title", default="run-site is running"),
         show_db_credentials=_bool(raw, "show_db_credentials", default=True),
         suggest_dev_helpers=_bool(raw, "suggest_dev_helpers", default=True),
     )

@@ -1,11 +1,11 @@
-"""Env builder tests — DEV_HELPERS_* contract + project [env] mapping (§13)."""
+"""Env builder tests — DEV_HELPERS_* contract + project [env] mapping."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from django_run_site.config import load_config
-from django_run_site.env import (
+from run_site.config import load_config
+from run_site.env import (
     REDACT_VALUE,
     ContainerEndpoints,
     build_subprocess_env,

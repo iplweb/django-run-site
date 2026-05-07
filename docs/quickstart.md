@@ -6,9 +6,9 @@ Celery — running in one command.
 ## Install
 
 ```bash
-pipx install django-run-site
+pipx install run-site
 # or
-uv tool install django-run-site
+uv tool install run-site
 ```
 
 You'll also need:
@@ -19,13 +19,25 @@ You'll also need:
 - **Python 3.11+** (the CLI itself; your project can use any Python the
   orchestrator can find — see [configuration](configuration.md#python)).
 
-## 1. Drop a `runsite.toml` in your repo
+## 1. Generate `runsite.toml`
+
+The fastest path is `run-site init`, which detects `manage.py`, your Django
+project module, Celery, and `uv`, and writes a working config you can use
+as-is:
+
+```bash
+run-site init
+```
+
+If you prefer to author it by hand, the minimal shape is:
 
 ```toml
 project_slug = "myproject"
 manage_py = "manage.py"
 
 [python]
+# When uv is installed `run-site init` will write this instead:
+# command = ["uv", "run", "--no-sync", "python"]
 executable = "auto"
 
 [postgres]
@@ -80,7 +92,7 @@ map those names instead — see [configuration](configuration.md#env).
 ## 3. Run
 
 ```bash
-django-run-site run
+run-site run
 ```
 
 That will:
@@ -100,7 +112,7 @@ unless you passed `--reuse`.
 When you don't want to re-load the dump or wait for cold-start:
 
 ```bash
-django-run-site run --reuse
+run-site run --reuse
 ```
 
 Containers get stable names — `<project_slug>-runsite-pg` and
@@ -110,7 +122,7 @@ fresh ones.
 ## 5. Sanity-check before running
 
 ```bash
-django-run-site doctor
+run-site doctor
 ```
 
 Doctor verifies:

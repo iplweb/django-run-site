@@ -1,4 +1,4 @@
-"""Start/stop PostgreSQL and Redis testcontainers (§11).
+"""Start/stop PostgreSQL and Redis testcontainers.
 
 This module sits behind a thin abstraction so the rest of the CLI can stay
 testable without docker. The tests substitute fakes for
@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from django_run_site.config import RunSiteConfig
-from django_run_site.errors import DockerError
+from run_site.config import RunSiteConfig
+from run_site.errors import DockerError
 
 if TYPE_CHECKING:  # heavy imports only when types are checked
     from docker.models.containers import Container
@@ -339,7 +339,7 @@ def _published_port(container: Container, internal: int) -> int:  # type: ignore
 
 
 def _apply_ryuk_policy(config: RunSiteConfig, reuse: bool) -> None:
-    """Set the testcontainers Ryuk env knob per §11.4."""
+    """Set the testcontainers Ryuk env knob from ``[containers].ryuk``."""
 
     mode = config.containers.ryuk
     if mode == "true":

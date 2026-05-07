@@ -1,5 +1,5 @@
 # Configuration for the bundled examples/test_site Django project.
-# Used by integration tests that exercise django-run-site end-to-end.
+# Used by integration tests that exercise run-site end-to-end.
 
 project_slug = "test_site"
 manage_py = "manage.py"

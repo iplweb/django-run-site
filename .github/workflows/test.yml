@@ -139,10 +139,10 @@ jobs:
           pip install .
 
       - name: --version
-        run: django-run-site --version
+        run: run-site --version
 
       - name: --help
-        run: django-run-site --help
+        run: run-site --help
 
       - name: doctor against examples/test_site
         env:
@@ -153,7 +153,7 @@ jobs:
           # fail at the Docker probe step. Capture and confirm the
           # earlier checks passed.
           set +e
-          django-run-site doctor --project-root "$DOCTOR_PROJECT_ROOT" \
+          run-site doctor --project-root "$DOCTOR_PROJECT_ROOT" \
             --no-cache --no-pull > doctor.log 2>&1
           rc=$?
           set -e

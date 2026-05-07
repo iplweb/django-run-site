@@ -1,4 +1,4 @@
-"""Config loader / validator tests (§6, §21)."""
+"""Config loader / validator tests."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.config import find_config, load_config
-from django_run_site.errors import ConfigError
+from run_site.config import find_config, load_config
+from run_site.errors import ConfigError
 
 
 def test_loads_minimal_runsite_toml(tmp_path: Path, minimal_toml: Path) -> None:
@@ -23,9 +23,9 @@ def test_loads_pyproject_section(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         '[project]\nname = "demo"\n\n'
-        "[tool.django-run-site]\n"
+        "[tool.run-site]\n"
         'project_slug = "demo"\n'
-        "[tool.django-run-site.postgres]\n"
+        "[tool.run-site.postgres]\n"
         'image = "postgres:17"\n'
     )
     (tmp_path / "manage.py").write_text("")
@@ -36,7 +36,7 @@ def test_loads_pyproject_section(tmp_path: Path) -> None:
 
 def test_find_config_prefers_runsite_toml(tmp_path: Path) -> None:
     (tmp_path / "runsite.toml").write_text('project_slug = "x"\n')
-    (tmp_path / "pyproject.toml").write_text('[tool.django-run-site]\nproject_slug = "y"\n')
+    (tmp_path / "pyproject.toml").write_text('[tool.run-site]\nproject_slug = "y"\n')
     found = find_config(tmp_path)
     assert found is not None and found.name == "runsite.toml"
 

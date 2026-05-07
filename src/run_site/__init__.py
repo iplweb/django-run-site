@@ -1,4 +1,4 @@
-"""django-run-site — pure CLI orchestrator for local Django dev stacks.
+"""run-site — pure CLI orchestrator for local Django dev stacks.
 
 This package intentionally has zero Django dependency. It only knows how to:
 
@@ -12,8 +12,6 @@ This package intentionally has zero Django dependency. It only knows how to:
 Django-side conveniences (autologin, dotfiles, agent help) live in the
 companion ``django-dev-helpers`` package and integrate through a documented
 ``DEV_HELPERS_*`` env-var contract.
-
-See ``DJANGO-RUN-SITE-SPEC-v0.3.md`` for the full design.
 """
 
 __version__ = "0.3.0"

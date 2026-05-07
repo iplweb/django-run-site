@@ -1,4 +1,4 @@
-"""Git source resolution — slug extraction, runner mocking (§10.2)."""
+"""Git source resolution — slug extraction, runner mocking."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.errors import SourceError
-from django_run_site.source.from_git import (
+from run_site.errors import SourceError
+from run_site.source.from_git import (
     GitRunner,
     extract_slug,
     resolve_checkout_dir,
@@ -42,7 +42,7 @@ def test_extract_slug_fallback_to_hash() -> None:
 
 def test_resolve_checkout_dir_uses_cache_by_default(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        "django_run_site.source.from_git.CACHE_ROOT",
+        "run_site.source.from_git.CACHE_ROOT",
         tmp_path / "cache",
     )
     path, cache_owned, cleanup = resolve_checkout_dir(

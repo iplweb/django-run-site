@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from django_run_site.log_multiplexer import LogMultiplexer, StreamSpec
+from run_site.log_multiplexer import LogMultiplexer, StreamSpec
 
 
 @dataclass
@@ -307,7 +307,7 @@ def wait_for_http(
 
 @dataclass
 class TemplateContext:
-    """Variables substituted into ``extra_processes.command`` (§16)."""
+    """Variables substituted into ``extra_processes.command``."""
 
     python: tuple[str, ...]
     manage_py: Path

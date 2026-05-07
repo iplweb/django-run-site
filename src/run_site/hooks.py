@@ -1,4 +1,4 @@
-"""Hook execution — host commands and Django callables (§17).
+"""Hook execution — host commands and Django callables.
 
 Two hook flavors:
 
@@ -23,9 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from django_run_site.config import HookConfig, RunSiteConfig
-from django_run_site.errors import HookError
-from django_run_site.processes import run_oneshot
+from run_site.config import HookConfig, RunSiteConfig
+from run_site.errors import HookError
+from run_site.processes import run_oneshot
 
 logger = logging.getLogger(__name__)
 

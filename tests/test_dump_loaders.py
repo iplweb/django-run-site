@@ -1,4 +1,4 @@
-"""Dump format detection and strategy resolution (§12)."""
+"""Dump format detection and strategy resolution."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.config import load_config
-from django_run_site.dumps import (
+from run_site.config import load_config
+from run_site.dumps import (
     DumpFormat,
     detect_format,
     plan_dump,
     resolve_restore_jobs,
 )
-from django_run_site.errors import DumpError
+from run_site.errors import DumpError
 
 
 def test_detect_plain_sql(tmp_path: Path) -> None:

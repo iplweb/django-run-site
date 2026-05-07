@@ -1,4 +1,4 @@
-"""Container start/stop tests with mocked launchers (§11).
+"""Container start/stop tests with mocked launchers.
 
 Real-Docker tests that depend on a running daemon should be marked
 ``@pytest.mark.docker``.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from django_run_site.containers import (
+from run_site.containers import (
     PostgresLauncher,
     RedisLauncher,
     RunSiteContainers,

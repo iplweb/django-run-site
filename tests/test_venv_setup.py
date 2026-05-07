@@ -1,4 +1,4 @@
-"""Venv setup + deps installer tests (§10.4)."""
+"""Venv setup + deps installer tests."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.errors import VenvError
-from django_run_site.source.deps_installer import (
+from run_site.errors import VenvError
+from run_site.source.deps_installer import (
     DepsRunner,
     DepsStrategy,
     detect_deps_strategy,
     install_dependencies,
 )
-from django_run_site.source.venv_setup import (
+from run_site.source.venv_setup import (
     VenvRunner,
     ensure_venv,
     is_marker_stale,

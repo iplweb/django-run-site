@@ -1,9 +1,9 @@
-"""Create or update the dev superuser via ``manage.py shell -c`` (§14.2).
+"""Create or update the dev superuser via ``manage.py shell -c``.
 
 The reason we don't use ``createsuperuser`` is that it's interactive and
 doesn't let us set the password and ``is_active``/``is_staff``/``is_superuser``
 flags atomically. Going through ``shell -c`` with ``get_user_model()`` works
-on every project without requiring ``django_run_site`` in ``INSTALLED_APPS``.
+on every project without requiring ``run_site`` in ``INSTALLED_APPS``.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from django_run_site.config import RunSiteConfig
-from django_run_site.processes import ProcessResult, run_oneshot
+from run_site.config import RunSiteConfig
+from run_site.processes import ProcessResult, run_oneshot
 
 # This script runs INSIDE the project's Python via ``manage.py shell -c``.
 # Inputs come through env vars to avoid quoting issues; outputs come back

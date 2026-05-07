@@ -1,6 +1,6 @@
-# test_site — integration fixture for `django-run-site`
+# test_site — integration fixture for `run-site`
 
-This is a deliberately minimal Django project used by `django-run-site`
+This is a deliberately minimal Django project used by `run-site`
 integration tests and as a "show me it works" demo:
 
 - One app (`test_site.pages`) with two views: homepage `/` and `/healthz/`
@@ -13,7 +13,7 @@ integration tests and as a "show me it works" demo:
 
 ```bash
 cd examples/test_site
-django-run-site run
+run-site run
 ```
 
 The orchestrator will:

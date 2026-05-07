@@ -1,5 +1,5 @@
 """Build subprocess environments — DEV_HELPERS_* contract + project [env]
-mapping (§13).
+mapping.
 
 Two consumers:
 
@@ -9,7 +9,8 @@ Two consumers:
   ``DEV_HELPERS_*`` names that never change between releases.
 
 The CLI is the only place that knows both naming schemes — values are
-written under both names (intentional double-set, §13.2).
+written under both names (intentional double-set so consumers that look
+up either name see a value).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from django_run_site.config import RunSiteConfig
+from run_site.config import RunSiteConfig
 
 REDACT_VALUE = "<redacted>"
 SECRET_RE = re.compile(r"(?i).*(TOKEN|PASSWORD|SECRET|API_KEY).*")
@@ -29,7 +30,7 @@ SECRET_RE = re.compile(r"(?i).*(TOKEN|PASSWORD|SECRET|API_KEY).*")
 
 @dataclass(frozen=True)
 class ContainerEndpoints:
-    """Subset of :class:`~django_run_site.containers.RunSiteContainers` info
+    """Subset of :class:`~run_site.containers.RunSiteContainers` info
     needed to build env vars. Decoupled so env builder doesn't depend on
     docker/testcontainers."""
 
@@ -40,7 +41,7 @@ class ContainerEndpoints:
 
 
 def generate_autologin_token() -> str:
-    """Cryptographically-strong autologin token (§13.2)."""
+    """Cryptographically-strong autologin token."""
 
     return secrets.token_urlsafe(32)
 

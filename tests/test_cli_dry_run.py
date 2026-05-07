@@ -1,4 +1,4 @@
-"""CLI smoke tests — --version, --help, --dry-run, doctor (§8)."""
+"""CLI smoke tests — --version, --help, --dry-run, doctor."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.cli import main
+from run_site.cli import main
 
 
 def run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
@@ -24,7 +24,7 @@ def test_version_prints_and_exits(capsys) -> None:
 def test_top_level_help(capsys) -> None:
     code, out, _ = run_cli(["--help"], capsys)
     assert code == 0
-    assert "django-run-site" in out
+    assert "run-site" in out
     assert "doctor" in out
 
 
@@ -48,7 +48,7 @@ def test_run_dry_run(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     code, out, _ = run_cli(["run", "--dry-run", "--no-install"], capsys)
     assert code == 0
-    assert "django-run-site dry-run" in out
+    assert "run-site dry-run" in out
     assert "demo" in out
 
 

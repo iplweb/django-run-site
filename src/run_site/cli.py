@@ -1,6 +1,6 @@
 """Command-line entrypoint and the ``run`` / ``doctor`` flows.
 
-The argument parser is built in two passes (§8.1) so that hook ``cli_args``
+The argument parser is built in two passes so that hook ``cli_args``
 can be discovered from the resolved config before being added to the full
 parser.
 """
@@ -19,31 +19,31 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from django_run_site import __version__
-from django_run_site.banner import BannerInfo, render_banner
-from django_run_site.config import HookConfig, RunSiteConfig, load_config
-from django_run_site.containers import (
+from run_site import __version__
+from run_site.banner import BannerInfo, render_banner
+from run_site.config import HookConfig, RunSiteConfig, load_config
+from run_site.containers import (
     RunSiteContainers,
     assert_docker_available,
     start_containers,
     stop_containers,
 )
-from django_run_site.discovery import (
+from run_site.discovery import (
     discover_local_python,
     discover_manage_py,
     discover_project_root,
 )
-from django_run_site.dumps import execute_post_start, plan_dump
-from django_run_site.env import (
+from run_site.dumps import execute_post_start, plan_dump
+from run_site.env import (
     ContainerEndpoints,
     build_subprocess_env,
     format_env_for_print,
     generate_autologin_token,
 )
-from django_run_site.errors import RunSiteError
-from django_run_site.hooks import build_hook_context, run_hooks
-from django_run_site.log_multiplexer import LogMultiplexer
-from django_run_site.processes import (
+from run_site.errors import RunSiteError
+from run_site.hooks import build_hook_context, run_hooks
+from run_site.log_multiplexer import LogMultiplexer
+from run_site.processes import (
     ProcessGroup,
     TemplateContext,
     docker_logs_follow,
@@ -51,14 +51,15 @@ from django_run_site.processes import (
     run_oneshot,
     wait_for_http,
 )
-from django_run_site.source.deps_installer import install_dependencies
-from django_run_site.source.from_git import (
+from run_site.sidecar import SidecarInfo, remove_sidecar, write_sidecar
+from run_site.source.deps_installer import install_dependencies
+from run_site.source.from_git import (
     GitSource,
     cleanup_temp_checkout,
     resolve_git_source,
 )
-from django_run_site.source.from_path import resolve_path_source
-from django_run_site.source.venv_setup import ensure_venv
+from run_site.source.from_path import resolve_path_source
+from run_site.source.venv_setup import ensure_venv
 
 logger = logging.getLogger(__name__)
 
@@ -85,25 +86,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     if raw_argv[0] == "run":
         return _run_command(raw_argv[1:])
 
+    if raw_argv[0] == "init":
+        from run_site.init_cmd import init_command
+
+        return init_command(raw_argv[1:])
+
     if raw_argv[0] in ("-h", "--help"):
         _print_top_help()
         return 0
 
-    sys.stderr.write(f"Unknown command: {raw_argv[0]!r}. Try 'django-run-site --help'.\n")
+    sys.stderr.write(f"Unknown command: {raw_argv[0]!r}. Try 'run-site --help'.\n")
     return 64
 
 
 def _print_top_help() -> None:
     sys.stdout.write(
-        "django-run-site — CLI orchestrator for local Django development.\n"
+        "run-site — CLI orchestrator for local Django development "
+        "(package: run-site).\n"
         "\n"
         "Usage:\n"
-        "  django-run-site run [options]      Spin up dev stack\n"
-        "  django-run-site doctor [options]   Sanity-check config + tooling\n"
-        "  django-run-site --version          Print version and exit\n"
+        "  run-site init [options]     Generate a default runsite.toml\n"
+        "  run-site run [options]      Spin up dev stack\n"
+        "  run-site doctor [options]   Sanity-check config + tooling\n"
+        "  run-site --version          Print version and exit\n"
         "\n"
         f"Version: {__version__}\n"
-        "Run 'django-run-site run --help' for the full options list.\n"
+        "Run 'run-site <command> --help' for the full options list.\n"
     )
 
 
@@ -114,7 +122,7 @@ def _print_top_help() -> None:
 
 @dataclass
 class PreParsed:
-    """Output of the first parsing pass (§8.1 step 1)."""
+    """Output of the first parsing pass."""
 
     config: Path | None
     project_root: Path | None
@@ -349,7 +357,7 @@ def _run_command_inner(argv: Sequence[str]) -> int:
     parser = _build_full_parser(
         hooks=config.hooks,
         extra_processes=config.extra_processes,
-        program="django-run-site run",
+        program="run-site run",
     )
     opts = parser.parse_args(list(argv))
     _configure_logging(opts.verbose)
@@ -380,7 +388,7 @@ def _execute_run(
     # Apply CLI overrides on top of config (postgres image, redis image, etc).
     config = _apply_cli_overrides(config, opts)
 
-    # Venv setup happens BEFORE local Python discovery (§9, §10.4).
+    # Venv setup happens BEFORE local Python discovery.
     # Skip entirely for --dry-run; users want to validate config without
     # touching the filesystem.
     if not opts.dry_run:
@@ -561,7 +569,7 @@ def _execute_run(
         # Superuser.
         superuser_payload: dict[str, Any] | None = None
         if config.superuser.enabled and not opts.no_superuser:
-            from django_run_site.superuser import setup_superuser
+            from run_site.superuser import setup_superuser
 
             mux.write("superuser", "magenta", "[superuser] ensuring dev account…")
             su = setup_superuser(
@@ -586,6 +594,27 @@ def _execute_run(
                 env=env_for_subprocess,
                 disabled_flags=disabled_hooks,
             )
+
+        # Sidecar — written before pre_serve so hooks (and django-dev-helpers
+        # at runserver bootstrap) can read the runtime endpoints.
+        sidecar_path = write_sidecar(
+            project_root=config.project_root,
+            info=SidecarInfo(
+                project_slug=config.project_slug,
+                web_host=config.django.runserver_display_host,
+                web_port=runserver_port,
+                pg_host=containers.pg_host,
+                pg_port=containers.pg_port,
+                pg_db=config.postgres.db,
+                pg_user=config.postgres.user,
+                pg_password=config.postgres.password,
+                redis_host=containers.redis_host,
+                redis_port=containers.redis_port,
+                redis_db=config.redis.db,
+                celery_enabled=(config.celery.enabled and opts.with_celery is not False),
+                celery_app=config.celery.app,
+            ),
+        )
 
         # pre_serve hooks.
         ctx_pre_serve = _hook_context(
@@ -628,6 +657,9 @@ def _execute_run(
                 ),
                 source_checkout=str(git_source.checkout_path) if git_source else None,
                 dev_helpers_installed=_dev_helpers_installed(python),
+                reuse=opts.reuse,
+                sidecar_path=sidecar_path,
+                superuser=superuser_payload,
             ),
         )
         sys.stdout.write(banner)
@@ -752,6 +784,8 @@ def _execute_run(
         proc_group.terminate_all()
         with _suppress():
             stop_containers(containers)
+        with _suppress():
+            remove_sidecar(project_root=config.project_root)
         raise
 
 
@@ -786,6 +820,8 @@ def _shutdown(
     if not opts.reuse:
         with _suppress():
             stop_containers(containers)
+    with _suppress():
+        remove_sidecar(project_root=config.project_root)
     primary = proc_group.primary()
     if primary is not None and primary.returncode is not None:
         return primary.returncode
@@ -897,7 +933,7 @@ def _celery_status_label(config: RunSiteConfig, opts: argparse.Namespace) -> str
 
 
 def _dev_helpers_installed(python: tuple[str, ...]) -> bool:
-    """Probe the project's Python for ``django_dev_helpers`` (§18.2)."""
+    """Probe the project's Python for ``django_dev_helpers``."""
 
     try:
         result = run_oneshot(
@@ -925,7 +961,7 @@ def _dry_run_report(
     manage_py: Path,
     git_source: GitSource | None,
 ) -> int:
-    sys.stdout.write("=== django-run-site dry-run ===\n")
+    sys.stdout.write("=== run-site dry-run ===\n")
     sys.stdout.write(f"project_slug:   {config.project_slug}\n")
     sys.stdout.write(f"project_root:   {config.project_root}\n")
     sys.stdout.write(f"config_path:    {config.config_path}\n")
@@ -979,7 +1015,7 @@ def _doctor_command(argv: Sequence[str]) -> int:
         manage_py = discover_manage_py(cli_manage=None, config=config)
         python = discover_local_python(cli_python=None, config=config)
 
-        sys.stdout.write("=== django-run-site doctor ===\n")
+        sys.stdout.write("=== run-site doctor ===\n")
         sys.stdout.write(f"project_root:   {config.project_root}\n")
         sys.stdout.write(f"config_path:    {config.config_path}\n")
         sys.stdout.write(f"manage_py:      {manage_py}\n")

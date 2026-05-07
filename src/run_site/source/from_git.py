@@ -1,8 +1,8 @@
-"""Clone or update a Git repository for ``--from-git`` (§10.2).
+"""Clone or update a Git repository for ``--from-git``.
 
 Two notions of "ownership" govern destructive operations:
 
-- **cache-owned** (``~/.cache/django-run-site/checkouts/<slug>/``): the CLI
+- **cache-owned** (``~/.cache/run-site/checkouts/<slug>/``): the CLI
   considers itself the sole owner. We can ``git reset --hard`` freely.
 - **user-owned** (any other path, e.g. ``--checkout-path ~/projects/foo``):
   the user might have local changes. Default: refuse to discard. Require
@@ -22,9 +22,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from django_run_site.errors import SourceError
+from run_site.errors import SourceError
 
-CACHE_ROOT = Path.home() / ".cache" / "django-run-site" / "checkouts"
+CACHE_ROOT = Path.home() / ".cache" / "run-site" / "checkouts"
 SLUG_RE = re.compile(r"(?:[/:])([^/:]+/[^/]+?)(?:\.git)?/?$")
 SLUG_SAFE_RE = re.compile(r"[^A-Za-z0-9_/-]")
 
@@ -71,7 +71,7 @@ def resolve_checkout_dir(
         return path, cache_owned, False
     if no_cache:
         # Use a tempdir; cleanup_on_exit=True so the run flow can rm-rf it.
-        tmp = Path(tempfile.mkdtemp(prefix="django-run-site-"))
+        tmp = Path(tempfile.mkdtemp(prefix="run-site-"))
         return tmp, False, True
     slug = extract_slug(url)
     return CACHE_ROOT / slug, True, False

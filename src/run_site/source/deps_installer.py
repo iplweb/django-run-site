@@ -1,4 +1,4 @@
-"""Detect and install Python dependencies for a project (§10.4)."""
+"""Detect and install Python dependencies for a project."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from django_run_site.errors import VenvError
-from django_run_site.source.venv_setup import (
+from run_site.errors import VenvError
+from run_site.source.venv_setup import (
     is_marker_stale,
     touch_marker,
     venv_python_path,

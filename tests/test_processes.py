@@ -1,4 +1,4 @@
-"""Process / HTTP probe tests (§14, §16)."""
+"""Process / HTTP probe tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.processes import (
+from run_site.processes import (
     TemplateContext,
     find_free_port,
     run_oneshot,

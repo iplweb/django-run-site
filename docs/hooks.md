@@ -72,8 +72,8 @@ cli_disable_flag = "--skip-assets"
 ```
 
 ```bash
-django-run-site run                 # runs `make assets` first
-django-run-site run --skip-assets   # skips it for this run only
+run-site run                 # runs `make assets` first
+run-site run --skip-assets   # skips it for this run only
 ```
 
 ### Per-project superuser cleanup
@@ -117,11 +117,12 @@ def fetch_token(ctx: dict) -> None:
 ```
 
 ```bash
-django-run-site run --get-token-from admin@bpp-prod
+run-site run --get-token-from admin@bpp-prod
 ```
 
 `--help` will show the new flag automatically — the parser is rebuilt
-after config load (see [§8.1 of the spec](../DJANGO-RUN-SITE-SPEC-v0.3.md#81-two-pass-parsing)).
+after config load (two-pass parsing: discover hooks first, then add their
+flags before the final `parse_args`).
 
 ## Context dict (`ctx`)
 
@@ -168,7 +169,7 @@ A timeout sends SIGTERM, waits 5 seconds, then SIGKILL.
 
 ## Validation
 
-`django-run-site doctor` and `--dry-run` validate:
+`run-site doctor` and `--dry-run` validate:
 
 - `type` is `"command"` or `"django"`.
 - `callable` looks like `module.path:function_name`.

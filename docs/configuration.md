@@ -1,10 +1,10 @@
 # Configuration reference
 
-`django-run-site` reads configuration from one of two places, in order:
+`run-site` reads configuration from one of two places, in order:
 
 1. `runsite.toml` in your project root (preferred — clearer for non-trivial
    configs).
-2. `[tool.django-run-site]` in `pyproject.toml` (handy when you don't want
+2. `[tool.run-site]` in `pyproject.toml` (handy when you don't want
    another file).
 
 CLI flags always override the config.
@@ -21,8 +21,7 @@ manage_py = "src/manage.py"  # path to manage.py, relative to project_root
 
 ## `[python]`
 
-How to invoke the project's Python interpreter. See
-[discovery flow §7.3](../DJANGO-RUN-SITE-SPEC-v0.3.md#73-lokalny-python).
+How to invoke the project's Python interpreter.
 
 ```toml
 [python]
@@ -222,7 +221,7 @@ See [hooks.md](hooks.md).
 
 ```toml
 [banner]
-title = "django-run-site is running"
+title = "run-site is running"
 show_db_credentials = true
 suggest_dev_helpers = true
 ```
@@ -237,7 +236,7 @@ your password looks production-y.
 type = "git"                                       # or "path"
 url = "https://github.com/iplweb/bpp.git"
 branch = "main"                                    # or tag/commit
-checkout_path = "~/.cache/django-run-site/checkouts/bpp"
+checkout_path = "~/.cache/run-site/checkouts/bpp"
 no_cache = false
 no_pull = false
 no_install = false

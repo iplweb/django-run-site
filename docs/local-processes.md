@@ -20,9 +20,9 @@ beat_extra_args = []
 Toggle per-run:
 
 ```bash
-django-run-site run --no-celery                  # don't start the worker
-django-run-site run --with-celery-beat           # also start beat
-django-run-site run --with-celery --no-celery-beat
+run-site run --no-celery                  # don't start the worker
+run-site run --with-celery-beat           # also start beat
+run-site run --with-celery --no-celery-beat
 ```
 
 `worker_pool = "solo"` is the default for a reason: macOS's `fork()` plus

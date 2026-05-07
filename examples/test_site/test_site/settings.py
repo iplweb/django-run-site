@@ -1,10 +1,10 @@
 """Django settings for the test_site demo project.
 
 This project is intentionally minimal so it works as an end-to-end fixture
-for ``django-run-site`` integration tests across Django 5.2 LTS and 6.x.
+for ``run-site`` integration tests across Django 5.2 LTS and 6.x.
 
-Database & cache config is read from the env vars that ``django-run-site``
-sets when it runs the project (see §13 of the spec):
+Database & cache config is read from the env vars that ``run-site``
+sets when it runs the project:
 
 - ``DATABASE_URL`` — Postgres URL produced by the orchestrator.
 - ``REDIS_URL`` — Redis URL.

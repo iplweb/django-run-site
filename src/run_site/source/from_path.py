@@ -1,10 +1,10 @@
-"""Resolve a Django project from a local filesystem path (§10.3)."""
+"""Resolve a Django project from a local filesystem path."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from django_run_site.errors import SourceError
+from run_site.errors import SourceError
 
 PROJECT_MARKERS: tuple[str, ...] = ("pyproject.toml", "manage.py", "runsite.toml")
 

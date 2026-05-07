@@ -1,4 +1,4 @@
-"""Hook execution tests — command + django types, dynamic CLI args (§17)."""
+"""Hook execution tests — command + django types, dynamic CLI args."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.config import HookCliArg, HookConfig, load_config
-from django_run_site.errors import HookError
-from django_run_site.hooks import build_hook_context, run_hooks
+from run_site.config import HookCliArg, HookConfig, load_config
+from run_site.errors import HookError
+from run_site.hooks import build_hook_context, run_hooks
 
 PYTHON = sys.executable
 
@@ -176,7 +176,7 @@ def test_dynamic_cli_args_validation(tmp_path: Path) -> None:
 def test_django_hook_command_construction(minimal_config, tmp_path: Path) -> None:
     """The exact argv we'd run for a django hook contains shell -c with bootstrap."""
 
-    from django_run_site.hooks import DJANGO_BOOTSTRAP
+    from run_site.hooks import DJANGO_BOOTSTRAP
 
     assert "import json" in DJANGO_BOOTSTRAP
     assert "DJANGO_RUN_SITE_CONTEXT" in DJANGO_BOOTSTRAP

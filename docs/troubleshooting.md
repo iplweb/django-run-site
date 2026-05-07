@@ -7,7 +7,7 @@ error: Docker daemon is not reachable. Start Docker Desktop / colima /
 podman and retry.
 ```
 
-`django-run-site` needs a working Docker daemon for testcontainers. Common
+`run-site` needs a working Docker daemon for testcontainers. Common
 fixes:
 
 - **macOS**: start Docker Desktop, OrbStack, colima, or rancher-desktop.
@@ -17,7 +17,7 @@ fixes:
   (`systemctl --user enable --now podman.socket`) and export
   `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`.
 
-`django-run-site doctor` runs the same probe and prints the same error if
+`run-site doctor` runs the same probe and prints the same error if
 it fails — useful as a one-liner sanity check.
 
 ## `manage.py` not found
@@ -27,7 +27,7 @@ error: Could not find manage.py in /path/. Set --manage-py or
 'manage_py' in runsite.toml.
 ```
 
-Resolution chain (§7.2):
+Resolution chain:
 
 1. `--manage-py PATH`
 2. `manage_py = "..."` in config

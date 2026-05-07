@@ -1,4 +1,4 @@
-"""Multiplex local subprocess output with colored prefixes (§18.1)."""
+"""Multiplex local subprocess output with colored prefixes."""
 
 from __future__ import annotations
 

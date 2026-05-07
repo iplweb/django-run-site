@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from django_run_site.config import RunSiteConfig, load_config
+from run_site.config import RunSiteConfig, load_config
 
 
 @pytest.fixture

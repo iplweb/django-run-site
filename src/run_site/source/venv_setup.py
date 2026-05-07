@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from django_run_site.errors import VenvError
+from run_site.errors import VenvError
 
 MARKER_FILE = ".dev_helpers_installed_marker"
 

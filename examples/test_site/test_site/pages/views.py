@@ -12,8 +12,8 @@ def home(request: HttpRequest) -> HttpResponse:
 
     body = (
         "<!doctype html>\n"
-        "<html><head><title>django-run-site test_site</title></head>\n"
-        "<body><h1>django-run-site test_site</h1>"
+        "<html><head><title>run-site test_site</title></head>\n"
+        "<body><h1>run-site test_site</h1>"
         "<p>This page confirms the orchestrator wired up Django, PG, and "
         "Redis correctly.</p>"
         '<p><a href="/admin/">Admin</a> · '

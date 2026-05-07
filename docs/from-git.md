@@ -4,24 +4,24 @@
 
 ```bash
 # Clone, set up venv, install deps, then run:
-django-run-site run --from-git https://github.com/iplweb/bpp.git --branch main
+run-site run --from-git https://github.com/iplweb/bpp.git --branch main
 
 # Same, but checkout a tag:
-django-run-site run --from-git https://github.com/iplweb/bpp.git --tag v1.0
+run-site run --from-git https://github.com/iplweb/bpp.git --tag v1.0
 
 # Or a specific commit:
-django-run-site run --from-git https://github.com/iplweb/bpp.git --commit a1b2c3d
+run-site run --from-git https://github.com/iplweb/bpp.git --commit a1b2c3d
 
 # Reuse an existing clone, no pull, no reinstall:
-django-run-site run \
+run-site run \
     --from-git https://github.com/iplweb/bpp.git \
     --no-pull --no-install --reuse
 
 # Local checkout from someone else:
-django-run-site run --from-path ~/Downloads/some-django-app
+run-site run --from-path ~/Downloads/some-django-app
 
 # Sanity check before doing the full run:
-django-run-site doctor --from-git https://github.com/iplweb/bpp.git
+run-site doctor --from-git https://github.com/iplweb/bpp.git
 ```
 
 ## What happens
@@ -29,7 +29,7 @@ django-run-site doctor --from-git https://github.com/iplweb/bpp.git
 1. **Resolve the checkout path**
    - `--checkout-path PATH` → use that path.
    - `--no-cache` → fresh tempdir, cleaned up on exit.
-   - default → `~/.cache/django-run-site/checkouts/<slug>/`, where `<slug>`
+   - default → `~/.cache/run-site/checkouts/<slug>/`, where `<slug>`
      is extracted from the URL (e.g. `iplweb/bpp` for
      `https://github.com/iplweb/bpp.git`).
 
@@ -80,14 +80,14 @@ Defenses:
   timeout that defaults to no.
 - Non-TTY (CI, pipes): refuses to proceed unless `--yes` / `-y` is passed.
 - `--no-cache` is opt-in — by default the cache survives between runs, so
-  `rm -rf ~/.cache/django-run-site/checkouts/` is the user's call.
+  `rm -rf ~/.cache/run-site/checkouts/` is the user's call.
 - `doctor --from-git URL` clones + checks config + manage.py without
   starting containers or runserver. Safer first step.
 
 ## CI usage
 
 ```bash
-django-run-site run \
+run-site run \
     --from-git https://github.com/myorg/myapp.git \
     --branch main \
     --reuse \

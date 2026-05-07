@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "django-run-site"
+name = "run-site"
 version = "0.3.0"
 description = "CLI orchestrator for local Django development — testcontainers PostgreSQL/Redis, dump loading, log multiplexing, hooks, and run-from-git."
 readme = "README.md"
@@ -49,7 +49,7 @@ docs = [
 ]
 
 [project.scripts]
-django-run-site = "django_run_site.cli:main"
+run-site = "run_site.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/iplweb/django-run-site"
@@ -58,7 +58,7 @@ Source = "https://github.com/iplweb/django-run-site"
 Issues = "https://github.com/iplweb/django-run-site/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/django_run_site"]
+packages = ["src/run_site"]
 
 [tool.hatch.build.targets.sdist]
 include = [
