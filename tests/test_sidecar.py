@@ -100,9 +100,50 @@ def test_sidecar_path_helper(tmp_path: Path) -> None:
 
 
 def test_sidecar_password_is_kept_verbatim(tmp_path: Path) -> None:
-    """We don't try to be clever about quoting in the URL — but the
-    plain-key form stores it untouched so consumers can build their own."""
+    """The plain-key form stores the password untouched so consumers can
+    build their own connection string."""
 
     write_sidecar(project_root=tmp_path, info=_make_info(pg_password="p@ss w0rd!"))
     data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
     assert data["postgres"]["password"] == "p@ss w0rd!"
+
+
+def test_sidecar_url_url_encodes_user_and_password(tmp_path: Path) -> None:
+    """Special characters in user/password must be URL-encoded in the
+    connection URL or downstream parsers (psycopg, sqlalchemy) get
+    confused by ``@`` / ``:`` / spaces."""
+
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(pg_user="user@host", pg_password="p@ss w0rd!:/"),
+    )
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert data["postgres"]["user"] == "user@host"
+    assert data["postgres"]["password"] == "p@ss w0rd!:/"
+    # url field has special chars percent-encoded
+    assert "user%40host" in data["postgres"]["url"]
+    assert "p%40ss%20w0rd%21%3A%2F" in data["postgres"]["url"]
+
+
+def test_sidecar_escapes_quote_and_backslash(tmp_path: Path) -> None:
+    """A password containing ``"`` or ``\\`` must not break TOML parsing."""
+
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(pg_password='hard"to\\quote'),
+    )
+    # Reading back via tomllib is the strictest test — if escaping is
+    # broken the file fails to parse.
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert data["postgres"]["password"] == 'hard"to\\quote'
+
+
+def test_sidecar_escapes_control_chars(tmp_path: Path) -> None:
+    """Newlines / tabs in fields must be escaped, not interpolated raw."""
+
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(pg_password="line1\nline2\twith-tab"),
+    )
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert data["postgres"]["password"] == "line1\nline2\twith-tab"

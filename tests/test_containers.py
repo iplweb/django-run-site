@@ -171,6 +171,66 @@ def test_stop_containers_skipped_when_reuse(minimal_config) -> None:
     assert redis.stopped == []
 
 
+def test_redis_failure_rolls_back_pg(minimal_config) -> None:
+    """If Redis startup raises after PG started, PG must be stopped so
+    we don't leak a half-started stack."""
+
+    pg = FakePgLauncher()
+
+    class FailingRedis(RedisLauncher):
+        def start(self, *, image, name) -> tuple[str, str, int]:
+            raise RuntimeError("simulated redis boom")
+
+        def find_existing(self, name: str) -> tuple[str, str, int] | None:
+            return None
+
+        def stop(self, container_id: str) -> None:
+            pass
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="simulated redis boom"):
+        start_containers(
+            config=minimal_config,
+            reuse=False,
+            init_script=None,
+            pg_launcher=pg,
+            redis_launcher=FailingRedis(),
+        )
+    # PG was stopped during rollback even though start_containers raised.
+    assert pg.stopped == ["pg-cid"]
+
+
+def test_redis_failure_does_not_stop_pg_when_attached(minimal_config) -> None:
+    """If we *attached* to an existing PG (reuse), don't tear it down
+    when Redis fails — it wasn't ours to stop."""
+
+    pg = FakePgLauncher(found=("attached-pg", "127.0.0.1", 11111))
+
+    class FailingRedis(RedisLauncher):
+        def start(self, *, image, name) -> tuple[str, str, int]:
+            raise RuntimeError("nope")
+
+        def find_existing(self, name: str) -> tuple[str, str, int] | None:
+            return None
+
+        def stop(self, container_id: str) -> None:
+            pass
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        start_containers(
+            config=minimal_config,
+            reuse=True,
+            init_script=None,
+            pg_launcher=pg,
+            redis_launcher=FailingRedis(),
+        )
+    # We attached, never created → must not stop.
+    assert pg.stopped == []
+
+
 def test_stop_containers_runs_stops_when_not_reuse() -> None:
     pg = FakePgLauncher()
     redis = FakeRedisLauncher()

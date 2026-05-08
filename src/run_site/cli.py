@@ -134,6 +134,7 @@ class PreParsed:
     checkout_path: str | None
     no_cache: bool
     no_pull: bool
+    force_reset: bool
     yes: bool
 
 
@@ -149,6 +150,7 @@ def _build_pre_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkout-path", default=None)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--no-pull", action="store_true")
+    parser.add_argument("--force-reset", action="store_true")
     parser.add_argument("--yes", "-y", action="store_true")
     return parser
 
@@ -167,6 +169,7 @@ def _pre_parse(argv: Sequence[str]) -> PreParsed:
         checkout_path=args.checkout_path,
         no_cache=args.no_cache,
         no_pull=args.no_pull,
+        force_reset=args.force_reset,
         yes=args.yes,
     )
 
@@ -321,7 +324,7 @@ def _run_command_inner(argv: Sequence[str]) -> int:
             checkout_path=pre.checkout_path,
             no_cache=pre.no_cache,
             no_pull=pre.no_pull,
-            force_reset=False,  # confirmed in full-parse below
+            force_reset=pre.force_reset,
             yes=pre.yes,
         )
         project_root_pre = git_source.checkout_path
@@ -345,7 +348,7 @@ def _run_command_inner(argv: Sequence[str]) -> int:
                 checkout_path=config.source.checkout_path,
                 no_cache=config.source.no_cache,
                 no_pull=config.source.no_pull,
-                force_reset=False,
+                force_reset=pre.force_reset,
                 yes=pre.yes,
             )
             new_root = git_source.checkout_path
@@ -485,6 +488,12 @@ def _execute_run(
 
         if opts.print_env:
             print(format_env_for_print(env_for_runserver, redact=not opts.print_secrets))
+            # Diagnostic mode — containers were started so the printed env
+            # reflects real ports. Tear them down on the way out unless the
+            # user asked to keep them alive for reuse.
+            if not opts.reuse:
+                with _suppress():
+                    stop_containers(containers)
             return 0
 
         # post_containers hooks.
@@ -611,7 +620,7 @@ def _execute_run(
                 redis_host=containers.redis_host,
                 redis_port=containers.redis_port,
                 redis_db=config.redis.db,
-                celery_enabled=(config.celery.enabled and opts.with_celery is not False),
+                celery_enabled=_celery_active(config, opts),
                 celery_app=config.celery.app,
             ),
         )
@@ -681,9 +690,11 @@ def _execute_run(
             color="cyan",
         )
 
-        if config.celery.enabled and opts.with_celery is not False:
+        if _celery_active(config, opts):
             if config.celery.app is None:
-                raise RunSiteError("Celery is enabled but [celery].app is not set in config")
+                raise RunSiteError(
+                    "Celery is requested but [celery].app is not set in config"
+                )
             proc_group.spawn(
                 name="celery",
                 argv=(
@@ -898,7 +909,14 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     dj = config.django
     if opts.bind:
         dj = replace(dj, runserver_bind=opts.bind)
-    return replace(config, postgres=pg, redis=redis, django=dj)
+    dump = config.dump
+    if opts.restore_jobs is not None:
+        dump = replace(dump, restore_jobs=opts.restore_jobs)
+    # Fold [source].no_install into opts.no_install so a single boolean
+    # drives venv setup downstream.
+    if config.source.no_install and not opts.no_install:
+        opts.no_install = True
+    return replace(config, postgres=pg, redis=redis, django=dj, dump=dump)
 
 
 def _maybe_init_script(*, config, opts) -> Path | None:
@@ -961,8 +979,20 @@ def _collect_hook_opts(hooks: tuple[HookConfig, ...], opts: argparse.Namespace) 
     return out
 
 
+def _celery_active(config: RunSiteConfig, opts: argparse.Namespace) -> bool:
+    """Effective Celery on/off: ``--with-celery`` forces it on (when an
+    app is configured), ``--no-celery`` forces it off, otherwise follow
+    ``[celery].enabled``."""
+
+    if opts.with_celery is True:
+        return config.celery.app is not None
+    if opts.with_celery is False:
+        return False
+    return config.celery.enabled
+
+
 def _celery_status_label(config: RunSiteConfig, opts: argparse.Namespace) -> str:
-    if not config.celery.enabled or opts.with_celery is False:
+    if not _celery_active(config, opts):
         return "disabled"
     parts = [f"running --pool={config.celery.worker_pool}"]
     with_beat = opts.with_beat if opts.with_beat is not None else config.celery.with_beat
@@ -1043,7 +1073,7 @@ def _doctor_command(argv: Sequence[str]) -> int:
                 checkout_path=pre.checkout_path,
                 no_cache=pre.no_cache,
                 no_pull=pre.no_pull,
-                force_reset=False,
+                force_reset=pre.force_reset,
                 yes=pre.yes,
             )
             project_root_pre = git_source.checkout_path

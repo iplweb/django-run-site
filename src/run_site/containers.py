@@ -261,16 +261,25 @@ def start_containers(
         )
         pg_created = True
 
-    redis_existing = redis_launcher.find_existing(redis_name) if redis_name else None
-    if redis_existing is not None:
-        redis_id, redis_host, redis_port = redis_existing
-        redis_created = False
-    else:
-        redis_id, redis_host, redis_port = redis_launcher.start(
-            image=config.redis.image,
-            name=redis_name,
-        )
-        redis_created = True
+    try:
+        redis_existing = redis_launcher.find_existing(redis_name) if redis_name else None
+        if redis_existing is not None:
+            redis_id, redis_host, redis_port = redis_existing
+            redis_created = False
+        else:
+            redis_id, redis_host, redis_port = redis_launcher.start(
+                image=config.redis.image,
+                name=redis_name,
+            )
+            redis_created = True
+    except BaseException:
+        # Roll back PG so we don't leak a half-started stack. Only stop
+        # what we created — never tear down a container the caller asked
+        # us to attach to via reuse.
+        if pg_created:
+            with suppress(Exception):
+                pg_launcher.stop(pg_id)
+        raise
 
     return RunSiteContainers(
         pg_host=pg_host,
