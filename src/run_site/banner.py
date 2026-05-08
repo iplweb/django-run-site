@@ -44,6 +44,7 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
     green = COLOR_CODES["green"] if use_color else ""
     yellow = COLOR_CODES["yellow"] if use_color else ""
     gray = COLOR_CODES["gray"] if use_color else ""
+    red = COLOR_CODES["red"] if use_color else ""
     reset = ANSI_RESET if use_color else ""
 
     lines: list[str] = []
@@ -75,7 +76,11 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
         )
         lines.extend(_render_postgres_helpers(info=info, config=config, gray=gray, reset=reset))
     lines.append(f"  {bold}{yellow}Redis:{reset}    {info.redis_host}:{info.redis_port}")
-    lines.extend(_render_lifecycle(info=info, config=config, gray=gray, bold=bold, reset=reset))
+    lines.extend(
+        _render_lifecycle(
+            info=info, config=config, gray=gray, bold=bold, red=red, reset=reset
+        )
+    )
     lines.append(f"  {bold}Celery:{reset}   {info.celery_status}")
     if not config.celery.enabled:
         lines.extend(_render_celery_enable_hint(gray=gray, reset=reset))
@@ -186,7 +191,7 @@ def _render_superuser(
 
 
 def _render_lifecycle(
-    *, info: BannerInfo, config: RunSiteConfig, gray: str, bold: str, reset: str
+    *, info: BannerInfo, config: RunSiteConfig, gray: str, bold: str, red: str, reset: str
 ) -> list[str]:
     """Tell the user whether Postgres + Redis will survive after exit.
 
@@ -205,7 +210,8 @@ def _render_lifecycle(
             f"             {gray}  docker rm -f {slug}-runsite-pg " f"{slug}-runsite-redis{reset}",
         ]
     return [
-        f"  {bold}Lifecycle:{reset} Postgres + Redis will be {bold}removed{reset} on exit.",
+        f"  {red}{bold}Lifecycle:{reset}{red} Postgres + Redis will be "
+        f"{bold}removed{reset}{red} on exit.{reset}",
         f"             {gray}Pass --reuse to keep them between runs "
         f"(faster restart, dump preserved).{reset}",
     ]
