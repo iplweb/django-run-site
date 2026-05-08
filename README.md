@@ -66,6 +66,62 @@ The CLI **does not import Django**, does not modify `urls.py`, does not know
 your `settings.py`. It only spawns `<your-python> <your-manage.py> <command>`
 as subprocesses and multiplexes their logs.
 
+## Architecture at a glance
+
+Postgres and Redis run as **testcontainers** with their host ports
+auto-assigned to free ephemeral slots. Django and Celery run **locally**
+(no container, native subprocesses of run-site). The web port follows the
+same rule as the container ports — the configured default if free,
+otherwise a random free port. Every process inherits the live URLs from
+run-site as environment variables, so nothing in the stack hard-codes a
+port and parallel checkouts of the same project don't collide.
+
+```
+                     HOST MACHINE — everything on 127.0.0.1 (loopback)
+
+ ┌──────────────────  Local processes (spawned by run-site, native)  ──────────────────┐
+ │                                                                                      │
+ │    manage.py runserver        celery -A <app> worker        celery -A <app> beat     │
+ │    ─────────────────────      ──────────────────────        ─────────────────────    │
+ │    binds :<web_port>          no listening port             no listening port        │
+ │      default 8000,            (broker / DB client)          (broker / DB client)     │
+ │      else random free                                                                 │
+ │                                                                                       │
+ │    All three inherit env from run-site:                                               │
+ │      DATABASE_URL      = postgres://…@127.0.0.1:<pg_port>/…                           │
+ │      REDIS_URL         = redis://127.0.0.1:<redis_port>/0                             │
+ │      CELERY_BROKER_URL = redis://127.0.0.1:<redis_port>/0                             │
+ │                                                                                       │
+ └────────────────────────┬────────────────────────────────┬─────────────────────────────┘
+                          │ TCP                            │ TCP
+                          ▼                                ▼
+             ┌──────────────────────────┐     ┌──────────────────────────┐
+             │   Docker container       │     │   Docker container       │
+             │   ─────────────────      │     │   ─────────────────      │
+             │   PostgreSQL :5432       │     │   Redis :6379            │
+             │       (inside)           │     │       (inside)           │
+             │            │             │     │            │             │
+             │            ▼             │     │            ▼             │
+             │   host: 127.0.0.1:<pg>   │     │   host: 127.0.0.1:<rds>  │
+             │   random ephemeral port  │     │   random ephemeral port  │
+             │   (e.g. 49162)           │     │   (e.g. 49163)           │
+             └──────────────────────────┘     └──────────────────────────┘
+                   (testcontainers)                 (testcontainers)
+```
+
+Port allocation flow:
+
+1. run-site asks Docker to publish container ports with `-p 0:5432` and
+   `-p 0:6379` (`0` = "any free host port"). Docker assigns ephemeral
+   ports; run-site reads them back.
+2. run-site picks a free port for `runserver` — the configured default
+   if available, else a random free port.
+3. run-site exports `DATABASE_URL` / `REDIS_URL` / `CELERY_BROKER_URL`
+   into the child env and writes the same values to `.run-site-config`.
+4. Django, Celery worker, and Celery beat all start as native processes
+   and connect over loopback. None of them know or care which port
+   number ended up being used.
+
 ## Install
 
 ```bash
