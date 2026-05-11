@@ -12,8 +12,8 @@ imports the other; you can use either standalone.
 ## Install
 
 ```bash
-# CLI orchestrator
-uv tool install run-site
+# CLI orchestrator (PyPI: django-run-site, command: run-site)
+uv tool install django-run-site
 
 # Django app (in your project's dev deps)
 uv add django-dev-helpers --group dev

@@ -248,3 +248,96 @@ def test_stop_containers_runs_stops_when_not_reuse() -> None:
     stop_containers(containers, pg_launcher=pg, redis_launcher=redis)
     assert pg.stopped == ["pg"]
     assert redis.stopped == ["redis"]
+
+
+def test_start_containers_skips_postgres_when_disabled(minimal_config) -> None:
+    """``[postgres].enabled = false`` means: do not pull, do not start.
+    The result must carry ``None`` for all pg_* fields so downstream
+    consumers know to skip emitting DB env vars / sidecar sections.
+    """
+
+    from dataclasses import replace
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    config = replace(minimal_config, postgres=replace(minimal_config.postgres, enabled=False))
+    containers = start_containers(
+        config=config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    assert pg.started == []
+    assert containers.pg_host is None
+    assert containers.pg_port is None
+    assert containers.pg_container_id is None
+    assert containers.pg_created is None
+    # Redis still started — disables are independent.
+    assert containers.redis_port == 49153
+
+
+def test_start_containers_skips_redis_when_disabled(minimal_config) -> None:
+    from dataclasses import replace
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    config = replace(minimal_config, redis=replace(minimal_config.redis, enabled=False))
+    containers = start_containers(
+        config=config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    assert redis.started == []
+    assert containers.redis_host is None
+    assert containers.redis_port is None
+    assert containers.pg_port == 54321
+
+
+def test_start_containers_skips_both(minimal_config) -> None:
+    """SQLite-only / cache-less mode: neither service starts."""
+
+    from dataclasses import replace
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    config = replace(
+        minimal_config,
+        postgres=replace(minimal_config.postgres, enabled=False),
+        redis=replace(minimal_config.redis, enabled=False),
+    )
+    containers = start_containers(
+        config=config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    assert pg.started == []
+    assert redis.started == []
+    assert containers.pg_container_id is None
+    assert containers.redis_container_id is None
+
+
+def test_stop_containers_noop_when_ids_are_none() -> None:
+    """When the run started with both services disabled, stop_containers
+    is called with all-``None`` ids; it must not call into the launchers."""
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    containers = RunSiteContainers(
+        pg_host=None,
+        pg_port=None,
+        pg_container_id=None,
+        pg_created=None,
+        redis_host=None,
+        redis_port=None,
+        redis_container_id=None,
+        redis_created=None,
+        reuse=False,
+    )
+    stop_containers(containers, pg_launcher=pg, redis_launcher=redis)
+    assert pg.stopped == []
+    assert redis.stopped == []

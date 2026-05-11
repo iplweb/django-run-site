@@ -26,16 +26,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RunSiteContainers:
-    """Result of :func:`start_containers`."""
+    """Result of :func:`start_containers`.
 
-    pg_host: str
-    pg_port: int
-    pg_container_id: str
-    pg_created: bool
-    redis_host: str
-    redis_port: int
-    redis_container_id: str
-    redis_created: bool
+    Per-service fields are ``None`` when the corresponding service was
+    disabled in config (``[postgres].enabled = false`` /
+    ``[redis].enabled = false``) and therefore never started. Consumers
+    must check for ``None`` before reading the endpoints.
+    """
+
+    pg_host: str | None
+    pg_port: int | None
+    pg_container_id: str | None
+    pg_created: bool | None
+    redis_host: str | None
+    redis_port: int | None
+    redis_container_id: str | None
+    redis_created: bool | None
     reuse: bool
 
 
@@ -235,48 +241,62 @@ def start_containers(
     pg_launcher: PostgresLauncher | None = None,
     redis_launcher: RedisLauncher | None = None,
 ) -> RunSiteContainers:
-    """Start PG and Redis (or attach to existing if ``reuse=True``)."""
+    """Start PG and Redis (or attach to existing if ``reuse=True``).
+
+    A service is skipped entirely when its config has ``enabled = false``
+    — no image is pulled, no container is started, and the corresponding
+    fields on :class:`RunSiteContainers` are returned as ``None``.
+    """
 
     pg_launcher = pg_launcher or TestcontainersPostgres()
     redis_launcher = redis_launcher or TestcontainersRedis()
 
     _apply_ryuk_policy(config, reuse)
 
-    pg_name = f"{config.project_slug}-runsite-pg" if reuse else None
-    redis_name = f"{config.project_slug}-runsite-redis" if reuse else None
-
-    pg_existing = pg_launcher.find_existing(pg_name) if pg_name else None
-    if pg_existing is not None:
-        pg_id, pg_host, pg_port = pg_existing
-        pg_created = False
-    else:
-        pg_id, pg_host, pg_port = pg_launcher.start(
-            image=config.postgres.image,
-            user=config.postgres.user,
-            password=config.postgres.password,
-            db=config.postgres.db,
-            env=config.postgres.env,
-            name=pg_name,
-            init_script=init_script,
-        )
-        pg_created = True
-
-    try:
-        redis_existing = redis_launcher.find_existing(redis_name) if redis_name else None
-        if redis_existing is not None:
-            redis_id, redis_host, redis_port = redis_existing
-            redis_created = False
+    pg_id: str | None = None
+    pg_host: str | None = None
+    pg_port: int | None = None
+    pg_created: bool | None = None
+    if config.postgres.enabled:
+        pg_name = f"{config.project_slug}-runsite-pg" if reuse else None
+        pg_existing = pg_launcher.find_existing(pg_name) if pg_name else None
+        if pg_existing is not None:
+            pg_id, pg_host, pg_port = pg_existing
+            pg_created = False
         else:
-            redis_id, redis_host, redis_port = redis_launcher.start(
-                image=config.redis.image,
-                name=redis_name,
+            pg_id, pg_host, pg_port = pg_launcher.start(
+                image=config.postgres.image,
+                user=config.postgres.user,
+                password=config.postgres.password,
+                db=config.postgres.db,
+                env=config.postgres.env,
+                name=pg_name,
+                init_script=init_script,
             )
-            redis_created = True
+            pg_created = True
+
+    redis_id: str | None = None
+    redis_host: str | None = None
+    redis_port: int | None = None
+    redis_created: bool | None = None
+    try:
+        if config.redis.enabled:
+            redis_name = f"{config.project_slug}-runsite-redis" if reuse else None
+            redis_existing = redis_launcher.find_existing(redis_name) if redis_name else None
+            if redis_existing is not None:
+                redis_id, redis_host, redis_port = redis_existing
+                redis_created = False
+            else:
+                redis_id, redis_host, redis_port = redis_launcher.start(
+                    image=config.redis.image,
+                    name=redis_name,
+                )
+                redis_created = True
     except BaseException:
         # Roll back PG so we don't leak a half-started stack. Only stop
         # what we created — never tear down a container the caller asked
         # us to attach to via reuse.
-        if pg_created:
+        if pg_created and pg_id is not None:
             with suppress(Exception):
                 pg_launcher.stop(pg_id)
         raise
@@ -301,16 +321,22 @@ def stop_containers(
     redis_launcher: RedisLauncher | None = None,
     force: bool = False,
 ) -> None:
-    """Stop both containers unless ``reuse=True``, in which case leave them."""
+    """Stop both containers unless ``reuse=True``, in which case leave them.
+
+    A ``None`` container id means the service was disabled and never
+    started — nothing to stop.
+    """
 
     if containers.reuse and not force:
         return
     pg_launcher = pg_launcher or TestcontainersPostgres()
     redis_launcher = redis_launcher or TestcontainersRedis()
-    with suppress(Exception):
-        pg_launcher.stop(containers.pg_container_id)
-    with suppress(Exception):
-        redis_launcher.stop(containers.redis_container_id)
+    if containers.pg_container_id is not None:
+        with suppress(Exception):
+            pg_launcher.stop(containers.pg_container_id)
+    if containers.redis_container_id is not None:
+        with suppress(Exception):
+            redis_launcher.stop(containers.redis_container_id)
 
 
 def assert_docker_available() -> None:

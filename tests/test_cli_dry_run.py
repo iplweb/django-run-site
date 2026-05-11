@@ -20,7 +20,7 @@ def run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, s
 def test_version_prints_and_exits(capsys) -> None:
     code, out, _ = run_cli(["--version"], capsys)
     assert code == 0
-    assert "0.4.0" in out
+    assert "0.5.0" in out
 
 
 def test_top_level_help(capsys) -> None:

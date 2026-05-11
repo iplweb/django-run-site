@@ -88,9 +88,7 @@ def test_banner_celery_enable_hint_when_disabled(config: RunSiteConfig) -> None:
 
 
 def test_banner_no_celery_hint_when_enabled(config: RunSiteConfig) -> None:
-    cfg = replace(
-        config, celery=replace(config.celery, enabled=True, app="myproj.celery")
-    )
+    cfg = replace(config, celery=replace(config.celery, enabled=True, app="myproj.celery"))
     out = _strip_ansi(
         render_banner(config=cfg, info=_make_info(celery_status="running --pool=solo"))
     )
@@ -192,3 +190,88 @@ def test_banner_superuser_credentials_hidden_when_show_db_credentials_false(
     assert "Superuser: admin" in out
     assert "admin-pwd" not in out
     assert "(created)" in out
+
+
+def test_banner_renders_postgres_disabled(config: RunSiteConfig) -> None:
+    """When Postgres was not started, the banner shows ``disabled`` and
+    skips the psql helper lines entirely (there's no host:port to
+    advertise)."""
+
+    cfg = replace(config, postgres=replace(config.postgres, enabled=False))
+    out = _strip_ansi(render_banner(config=cfg, info=_make_info(pg_host=None, pg_port=None)))
+    assert "Postgres: disabled" in out
+    # No psql command / libpq env line.
+    assert "PGPASSWORD=" not in out
+    assert "PGHOST=" not in out
+    # Redis section untouched.
+    assert "Redis:    127.0.0.1:16379" in out
+
+
+def test_banner_renders_redis_disabled(config: RunSiteConfig) -> None:
+    cfg = replace(config, redis=replace(config.redis, enabled=False))
+    out = _strip_ansi(render_banner(config=cfg, info=_make_info(redis_host=None, redis_port=None)))
+    assert "Redis:    disabled" in out
+    assert "Postgres: 127.0.0.1:54321" in out
+
+
+def test_lifecycle_suppressed_when_both_disabled(config: RunSiteConfig) -> None:
+    """If neither Postgres nor Redis was started, ``run-site`` controls
+    no container lifecycle — so the banner must not advertise that
+    ``Postgres + Redis will be removed on exit`` (they were never there)
+    nor suggest ``--reuse`` (which has no containers to reuse)."""
+
+    cfg = replace(
+        config,
+        postgres=replace(config.postgres, enabled=False),
+        redis=replace(config.redis, enabled=False),
+    )
+    out = _strip_ansi(
+        render_banner(
+            config=cfg,
+            info=_make_info(pg_host=None, pg_port=None, redis_host=None, redis_port=None),
+        )
+    )
+    assert "Lifecycle:" not in out
+    assert "Pass --reuse" not in out
+
+
+def test_lifecycle_mentions_only_enabled_service_postgres_only(
+    config: RunSiteConfig,
+) -> None:
+    cfg = replace(config, redis=replace(config.redis, enabled=False))
+    out = _strip_ansi(
+        render_banner(config=cfg, info=_make_info(redis_host=None, redis_port=None))
+    )
+    # The Lifecycle line names *only* the service that actually runs.
+    assert "Lifecycle:" in out
+    assert "Postgres will be" in out
+    assert "Postgres + Redis" not in out
+
+
+def test_lifecycle_mentions_only_enabled_service_redis_only(
+    config: RunSiteConfig,
+) -> None:
+    cfg = replace(config, postgres=replace(config.postgres, enabled=False))
+    out = _strip_ansi(
+        render_banner(config=cfg, info=_make_info(pg_host=None, pg_port=None))
+    )
+    assert "Lifecycle:" in out
+    assert "Redis will be" in out
+    assert "Postgres + Redis" not in out
+
+
+def test_lifecycle_reuse_uses_only_enabled_container_in_docker_rm(
+    config: RunSiteConfig,
+) -> None:
+    """Under ``--reuse``, the suggested cleanup ``docker rm -f`` line
+    must reference only the containers we actually started — naming a
+    non-existent ``<slug>-runsite-redis`` would print a confusing error."""
+
+    cfg = replace(config, redis=replace(config.redis, enabled=False))
+    out = _strip_ansi(
+        render_banner(
+            config=cfg, info=_make_info(reuse=True, redis_host=None, redis_port=None)
+        )
+    )
+    assert "docker rm -f demo-runsite-pg" in out
+    assert "demo-runsite-redis" not in out

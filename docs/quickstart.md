@@ -6,16 +6,19 @@ Celery — running in one command.
 ## Install
 
 ```bash
-pipx install run-site
+pipx install django-run-site
 # or
-uv tool install run-site
+uv tool install django-run-site
 ```
+
+The distribution on PyPI is `django-run-site`; the installed CLI command
+is `run-site`.
 
 You can also try run-site against any public repo without installing it
 first:
 
 ```bash
-uv tool run run-site run --from-git URL --yes
+uv tool run --from django-run-site run-site run --from-git URL --yes
 ```
 
 See [from-git.md](from-git.md) for the full story.
@@ -24,7 +27,9 @@ You'll also need:
 
 - **Docker** running locally (Docker Desktop, colima, podman with the docker
   socket exposed). The CLI talks to the daemon via the standard
-  `DOCKER_HOST` env var.
+  `DOCKER_HOST` env var. *Skip this if you're running SQLite-only with
+  `[postgres].enabled = false` and `[redis].enabled = false` — see the
+  [SQLite example](../examples/runsite.sqlite.toml).*
 - **Python 3.11+** (the CLI itself; your project can use any Python the
   orchestrator can find — see [configuration](configuration.md#python)).
 

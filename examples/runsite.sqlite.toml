@@ -1,0 +1,31 @@
+# SQLite-only example — no Docker, no Postgres, no Redis.
+#
+# Use this layout when your project's settings.py uses
+# django.db.backends.sqlite3 and you don't need a Redis cache. run-site
+# won't pull container images, won't connect to Docker, and will leave
+# DATABASES['default'] / CACHES['default'] entirely under your project's
+# control.
+
+project_slug = "myproject"
+manage_py = "manage.py"
+
+[python]
+executable = "auto"
+
+[postgres]
+enabled = false
+
+[redis]
+enabled = false
+
+[django]
+runserver_bind = "127.0.0.1"
+runserver_display_host = "localhost"
+browser_probe_path = "/admin/login/"
+migrate = true
+
+[superuser]
+enabled = true
+username = "admin"
+password = "admin"
+email = "admin@example.com"

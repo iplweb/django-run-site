@@ -72,6 +72,54 @@ def test_sidecar_omits_celery_app_when_none(tmp_path: Path) -> None:
     assert "app" not in data["celery"]
 
 
+def test_sidecar_omits_postgres_section_when_disabled(tmp_path: Path) -> None:
+    """If Postgres was never started, the ``[postgres]`` block must be
+    absent — a consumer reading the sidecar should be able to tell the
+    service didn't run."""
+
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(pg_host=None, pg_port=None, pg_db=None, pg_user=None, pg_password=None),
+    )
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert "postgres" not in data
+    # Other sections still present.
+    assert data["web"]["port"] == 8123
+    assert data["redis"]["host"] == "127.0.0.1"
+
+
+def test_sidecar_omits_redis_section_when_disabled(tmp_path: Path) -> None:
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(redis_host=None, redis_port=None, redis_db=None),
+    )
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert "redis" not in data
+    assert data["postgres"]["host"] == "127.0.0.1"
+
+
+def test_sidecar_omits_both_when_both_disabled(tmp_path: Path) -> None:
+    write_sidecar(
+        project_root=tmp_path,
+        info=_make_info(
+            pg_host=None,
+            pg_port=None,
+            pg_db=None,
+            pg_user=None,
+            pg_password=None,
+            redis_host=None,
+            redis_port=None,
+            redis_db=None,
+        ),
+    )
+    data = tomllib.loads((tmp_path / SIDECAR_FILENAME).read_text())
+    assert "postgres" not in data
+    assert "redis" not in data
+    # Web + celery sections still rendered so the file remains useful.
+    assert data["web"]["port"] == 8123
+    assert data["celery"]["enabled"] is False
+
+
 def test_write_overwrites_existing_file(tmp_path: Path) -> None:
     """A crashed prior run might leave a stale sidecar — overwrite it."""
 

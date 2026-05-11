@@ -73,7 +73,7 @@ discovery chain pick the right one. The current order is:
 
 ## `ModuleNotFoundError: No module named 'django'` from `runserver`/`migrate`
 
-Two causes, both common under `uv tool run run-site` / `pipx run`:
+Two causes, both common under `uv tool run --from django-run-site run-site` / `pipx run`:
 
 1. **Wrong venv picked.** The wrapper sets `VIRTUAL_ENV` to the *tool's*
    venv (which has run-site but not Django). run-site preferentially

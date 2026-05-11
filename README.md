@@ -1,4 +1,4 @@
-# run-site
+# django-run-site
 
 > **[`uvx`](https://docs.astral.sh/uv/guides/tools/)-wannabe for
 > full-fledged\* Django sites.**
@@ -30,8 +30,8 @@ Pure CLI orchestrator for local Django development. PostgreSQL & Redis
 testcontainers + dump load + local `runserver`/Celery + log multiplexer +
 hooks — all in one command. **Zero Django dependency in the CLI itself.**
 
-[![PyPI version](https://img.shields.io/pypi/v/run-site.svg)](https://pypi.org/project/run-site/)
-[![Python](https://img.shields.io/pypi/pyversions/run-site.svg)](https://pypi.org/project/run-site/)
+[![PyPI version](https://img.shields.io/pypi/v/django-run-site.svg)](https://pypi.org/project/django-run-site/)
+[![Python](https://img.shields.io/pypi/pyversions/django-run-site.svg)](https://pypi.org/project/django-run-site/)
 [![CI](https://github.com/iplweb/django-run-site/actions/workflows/test.yml/badge.svg)](https://github.com/iplweb/django-run-site/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -125,10 +125,13 @@ Port allocation flow:
 ## Install
 
 ```bash
-pipx install run-site
+pipx install django-run-site
 # or
-uv tool install run-site
+uv tool install django-run-site
 ```
+
+The PyPI distribution is `django-run-site`; the installed CLI command is
+`run-site` (also the import name `run_site`).
 
 Requirements: Python 3.11+, Docker daemon running, `git` (only if you use
 `--from-git`).
@@ -253,7 +256,7 @@ No clone, no venv, no `uv sync` to do by hand. The "uvx mode" — try a
 project without even installing run-site first:
 
 ```bash
-uv tool run run-site run --from-git git@github.com:mpasternak/django-multiseek.git --yes
+uv tool run --from django-run-site run-site run --from-git git@github.com:mpasternak/django-multiseek.git --yes
 ```
 
 `--yes` skips the cloning-confirmation prompt, making the command

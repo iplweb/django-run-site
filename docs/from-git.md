@@ -5,7 +5,7 @@
 ```bash
 # Zero-install: try a project without installing run-site first.
 # `--yes` skips the cloning prompt — copy-paste-safe in tutorials/CI.
-uv tool run run-site run --from-git git@github.com:mpasternak/django-multiseek.git --yes
+uv tool run --from django-run-site run-site run --from-git git@github.com:mpasternak/django-multiseek.git --yes
 
 # Same effect once run-site is installed:
 run-site run --from-git https://github.com/iplweb/bpp.git --branch main

@@ -221,6 +221,17 @@ def _build_full_parser(
     cont.add_argument("--no-reuse", dest="reuse", action="store_false")
     cont.add_argument("--postgres-image", default=None, metavar="IMAGE")
     cont.add_argument("--redis-image", default=None, metavar="IMAGE")
+    cont.add_argument(
+        "--no-postgres",
+        action="store_true",
+        help="Don't pull / start a Postgres container. Use when the project "
+        "uses SQLite or connects to an external DB.",
+    )
+    cont.add_argument(
+        "--no-redis",
+        action="store_true",
+        help="Don't pull / start a Redis container.",
+    )
 
     dump = parser.add_argument_group("Dump")
     dump.add_argument("--from-dump", dest="from_dump", type=Path, default=None, metavar="PATH")
@@ -422,7 +433,12 @@ def _execute_run(
 
     python = discover_local_python(cli_python=opts.python, config=config)
 
-    assert_docker_available()
+    # Docker is only required when at least one service will be started.
+    # ``[postgres].enabled = false`` + ``[redis].enabled = false`` (or the
+    # equivalent ``--no-postgres --no-redis``) means we never touch Docker
+    # at all — useful for SQLite-only / cache-less stacks.
+    if config.postgres.enabled or config.redis.enabled:
+        assert_docker_available()
 
     disabled_hooks = _collect_disabled_hooks(config.hooks, opts)
     hook_opts = _collect_hook_opts(config.hooks, opts)
@@ -516,14 +532,26 @@ def _execute_run(
             disabled_flags=disabled_hooks,
         )
 
-        # Dump (re-plan now that we know pg_created).
-        plan = plan_dump(
-            config=config,
-            cli_dump_path=opts.from_dump,
-            cli_no_dump=opts.no_dump,
-            cli_strategy_override=opts.dump_strategy,
-            pg_created=containers.pg_created,
-        )
+        # Dump (re-plan now that we know pg_created). When Postgres is
+        # disabled we have no container to load a dump into; refuse loudly
+        # if the user asked for one, otherwise just skip.
+        if not config.postgres.enabled:
+            dump_was_requested = opts.from_dump is not None or config.dump.default_path is not None
+            if dump_was_requested and not opts.no_dump:
+                raise RunSiteError(
+                    "Postgres is disabled ([postgres].enabled = false or "
+                    "--no-postgres) but a dump was requested. Either drop "
+                    "--from-dump / [dump].default_path, or pass --no-dump."
+                )
+            plan = None
+        else:
+            plan = plan_dump(
+                config=config,
+                cli_dump_path=opts.from_dump,
+                cli_no_dump=opts.no_dump,
+                cli_strategy_override=opts.dump_strategy,
+                pg_created=bool(containers.pg_created),
+            )
         run_hooks(
             stage="pre_dump",
             hooks=config.hooks,
@@ -534,6 +562,11 @@ def _execute_run(
             disabled_flags=disabled_hooks,
         )
         if plan is not None and plan.strategy == "post-start":
+            # A non-None plan implies postgres.enabled (see above), so all
+            # three values must be populated by start_containers.
+            assert containers.pg_host is not None
+            assert containers.pg_port is not None
+            assert containers.pg_container_id is not None
             execute_post_start(
                 plan,
                 config=config,
@@ -605,7 +638,8 @@ def _execute_run(
             )
 
         # Sidecar — written before pre_serve so hooks (and django-dev-helpers
-        # at runserver bootstrap) can read the runtime endpoints.
+        # at runserver bootstrap) can read the runtime endpoints. Per-service
+        # blocks are dropped when that service was disabled and not started.
         sidecar_path = write_sidecar(
             project_root=config.project_root,
             info=SidecarInfo(
@@ -614,12 +648,12 @@ def _execute_run(
                 web_port=runserver_port,
                 pg_host=containers.pg_host,
                 pg_port=containers.pg_port,
-                pg_db=config.postgres.db,
-                pg_user=config.postgres.user,
-                pg_password=config.postgres.password,
+                pg_db=config.postgres.db if config.postgres.enabled else None,
+                pg_user=config.postgres.user if config.postgres.enabled else None,
+                pg_password=(config.postgres.password if config.postgres.enabled else None),
                 redis_host=containers.redis_host,
                 redis_port=containers.redis_port,
-                redis_db=config.redis.db,
+                redis_db=config.redis.db if config.redis.enabled else None,
                 celery_enabled=_celery_active(config, opts),
                 celery_app=config.celery.app,
             ),
@@ -692,9 +726,7 @@ def _execute_run(
 
         if _celery_active(config, opts):
             if config.celery.app is None:
-                raise RunSiteError(
-                    "Celery is requested but [celery].app is not set in config"
-                )
+                raise RunSiteError("Celery is requested but [celery].app is not set in config")
             proc_group.spawn(
                 name="celery",
                 argv=(
@@ -755,8 +787,12 @@ def _execute_run(
                 color=ep.color,
             )
 
-        # docker logs -f for PG (if requested).
-        if config.postgres.stream_logs:
+        # docker logs -f for PG (if requested and PG was actually started).
+        if (
+            config.postgres.enabled
+            and config.postgres.stream_logs
+            and containers.pg_container_id is not None
+        ):
             argv = docker_logs_follow(containers.pg_container_id)
             if argv:
                 proc_group.spawn(
@@ -903,9 +939,13 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     pg = config.postgres
     if opts.postgres_image:
         pg = replace(pg, image=opts.postgres_image)
+    if getattr(opts, "no_postgres", False):
+        pg = replace(pg, enabled=False)
     redis = config.redis
     if opts.redis_image:
         redis = replace(redis, image=opts.redis_image)
+    if getattr(opts, "no_redis", False):
+        redis = replace(redis, enabled=False)
     dj = config.django
     if opts.bind:
         dj = replace(dj, runserver_bind=opts.bind)
@@ -920,6 +960,10 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
 
 
 def _maybe_init_script(*, config, opts) -> Path | None:
+    # No PG container means no place to mount an init script — and any
+    # configured dump simply has nowhere to land.
+    if not config.postgres.enabled:
+        return None
     plan = plan_dump(
         config=config,
         cli_dump_path=opts.from_dump,
@@ -1037,8 +1081,14 @@ def _dry_run_report(
     sys.stdout.write(f"manage_py:      {manage_py}\n")
     sys.stdout.write(f"python:         {' '.join(python)}\n")
     sys.stdout.write(f"reuse:          {opts.reuse}\n")
-    sys.stdout.write(f"postgres image: {config.postgres.image}\n")
-    sys.stdout.write(f"redis image:    {config.redis.image}\n")
+    if config.postgres.enabled:
+        sys.stdout.write(f"postgres image: {config.postgres.image}\n")
+    else:
+        sys.stdout.write("postgres image: <disabled>\n")
+    if config.redis.enabled:
+        sys.stdout.write(f"redis image:    {config.redis.image}\n")
+    else:
+        sys.stdout.write("redis image:    <disabled>\n")
     sys.stdout.write(f"celery enabled: {config.celery.enabled}\n")
     sys.stdout.write(f"hooks:          {len(config.hooks)} declared\n")
     if git_source is not None:

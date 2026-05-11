@@ -57,19 +57,25 @@ def _toml_basic_string(value: str) -> str:
 
 @dataclass(frozen=True)
 class SidecarInfo:
-    """Everything the sidecar file records — gathered by the run flow."""
+    """Everything the sidecar file records — gathered by the run flow.
+
+    ``pg_*`` and ``redis_*`` fields are ``None`` when the corresponding
+    service was disabled in config and therefore never started; in that
+    case the entire ``[postgres]`` / ``[redis]`` section is omitted from
+    the rendered sidecar file.
+    """
 
     project_slug: str
     web_host: str
     web_port: int
-    pg_host: str
-    pg_port: int
-    pg_db: str
-    pg_user: str
-    pg_password: str
-    redis_host: str
-    redis_port: int
-    redis_db: int
+    pg_host: str | None
+    pg_port: int | None
+    pg_db: str | None
+    pg_user: str | None
+    pg_password: str | None
+    redis_host: str | None
+    redis_port: int | None
+    redis_db: int | None
     celery_enabled: bool
     celery_app: str | None
 
@@ -106,16 +112,6 @@ def remove_sidecar(*, project_root: Path) -> None:
 
 def _render(info: SidecarInfo) -> str:
     generated = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
-    # URL-encode user/password — same contract as build_subprocess_env so
-    # values containing ``@``, ``/``, ``:``, spaces or other reserved
-    # chars produce a parseable connection URL.
-    quoted_user = urllib.parse.quote(info.pg_user, safe="")
-    quoted_pwd = urllib.parse.quote(info.pg_password, safe="")
-    pg_url = (
-        f"postgres://{quoted_user}:{quoted_pwd}"
-        f"@{info.pg_host}:{info.pg_port}/{info.pg_db}"
-    )
-    redis_url = f"redis://{info.redis_host}:{info.redis_port}/{info.redis_db}"
     s = _toml_basic_string
 
     lines: list[str] = [
@@ -130,24 +126,54 @@ def _render(info: SidecarInfo) -> str:
         f"host = {s(info.web_host)}",
         f"port = {info.web_port}",
         f"url = {s(f'http://{info.web_host}:{info.web_port}/')}",
-        "",
-        "[postgres]",
-        f"host = {s(info.pg_host)}",
-        f"port = {info.pg_port}",
-        f"db = {s(info.pg_db)}",
-        f"user = {s(info.pg_user)}",
-        f"password = {s(info.pg_password)}",
-        f"url = {s(pg_url)}",
-        "",
-        "[redis]",
-        f"host = {s(info.redis_host)}",
-        f"port = {info.redis_port}",
-        f"db = {info.redis_db}",
-        f"url = {s(redis_url)}",
-        "",
-        "[celery]",
-        f"enabled = {str(info.celery_enabled).lower()}",
     ]
+
+    if (
+        info.pg_host is not None
+        and info.pg_port is not None
+        and info.pg_db is not None
+        and info.pg_user is not None
+        and info.pg_password is not None
+    ):
+        # URL-encode user/password — same contract as build_subprocess_env so
+        # values containing ``@``, ``/``, ``:``, spaces or other reserved
+        # chars produce a parseable connection URL.
+        quoted_user = urllib.parse.quote(info.pg_user, safe="")
+        quoted_pwd = urllib.parse.quote(info.pg_password, safe="")
+        pg_url = f"postgres://{quoted_user}:{quoted_pwd}@{info.pg_host}:{info.pg_port}/{info.pg_db}"
+        lines.extend(
+            [
+                "",
+                "[postgres]",
+                f"host = {s(info.pg_host)}",
+                f"port = {info.pg_port}",
+                f"db = {s(info.pg_db)}",
+                f"user = {s(info.pg_user)}",
+                f"password = {s(info.pg_password)}",
+                f"url = {s(pg_url)}",
+            ]
+        )
+
+    if info.redis_host is not None and info.redis_port is not None and info.redis_db is not None:
+        redis_url = f"redis://{info.redis_host}:{info.redis_port}/{info.redis_db}"
+        lines.extend(
+            [
+                "",
+                "[redis]",
+                f"host = {s(info.redis_host)}",
+                f"port = {info.redis_port}",
+                f"db = {info.redis_db}",
+                f"url = {s(redis_url)}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "[celery]",
+            f"enabled = {str(info.celery_enabled).lower()}",
+        ]
+    )
     if info.celery_app:
         lines.append(f"app = {s(info.celery_app)}")
     lines.append("")

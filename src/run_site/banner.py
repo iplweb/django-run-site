@@ -13,14 +13,18 @@ from run_site.log_multiplexer import ANSI_RESET, COLOR_CODES, _color_supported
 
 @dataclass(frozen=True)
 class BannerInfo:
-    """Everything the banner needs, gathered by the run flow."""
+    """Everything the banner needs, gathered by the run flow.
+
+    ``pg_*`` / ``redis_*`` are ``None`` when the corresponding service
+    was disabled in config; the banner omits those rows entirely.
+    """
 
     appserver_url: str
     admin_url: str
-    pg_host: str
-    pg_port: int
-    redis_host: str
-    redis_port: int
+    pg_host: str | None
+    pg_port: int | None
+    redis_host: str | None
+    redis_port: int | None
     celery_status: str
     dump_label: str | None
     source_kind: str | None  # "git" | "path" | None
@@ -68,18 +72,22 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
     lines.append(f"  {bold}{green}App:{reset}     {info.appserver_url}")
     lines.append(f"  {bold}{green}Admin:{reset}   {info.admin_url}")
     lines.extend(_render_superuser(info=info, config=config, bold=bold, gray=gray, reset=reset))
-    lines.append(f"  {bold}{yellow}Postgres:{reset} {info.pg_host}:{info.pg_port}")
-    if config.banner.show_db_credentials:
-        lines.append(
-            f"           db={config.postgres.db}  user={config.postgres.user}  "
-            f"password={config.postgres.password}"
-        )
-        lines.extend(_render_postgres_helpers(info=info, config=config, gray=gray, reset=reset))
-    lines.append(f"  {bold}{yellow}Redis:{reset}    {info.redis_host}:{info.redis_port}")
+    if info.pg_host is not None and info.pg_port is not None:
+        lines.append(f"  {bold}{yellow}Postgres:{reset} {info.pg_host}:{info.pg_port}")
+        if config.banner.show_db_credentials:
+            lines.append(
+                f"           db={config.postgres.db}  user={config.postgres.user}  "
+                f"password={config.postgres.password}"
+            )
+            lines.extend(_render_postgres_helpers(info=info, config=config, gray=gray, reset=reset))
+    else:
+        lines.append(f"  {bold}{yellow}Postgres:{reset} {gray}disabled{reset}")
+    if info.redis_host is not None and info.redis_port is not None:
+        lines.append(f"  {bold}{yellow}Redis:{reset}    {info.redis_host}:{info.redis_port}")
+    else:
+        lines.append(f"  {bold}{yellow}Redis:{reset}    {gray}disabled{reset}")
     lines.extend(
-        _render_lifecycle(
-            info=info, config=config, gray=gray, bold=bold, red=red, reset=reset
-        )
+        _render_lifecycle(info=info, config=config, gray=gray, bold=bold, red=red, reset=reset)
     )
     lines.append(f"  {bold}Celery:{reset}   {info.celery_status}")
     if not config.celery.enabled:
@@ -116,6 +124,9 @@ def _render_postgres_helpers(
     user = config.postgres.user
     password = config.postgres.password
 
+    # _render_postgres_helpers is only invoked after callers verified that
+    # info.pg_host and info.pg_port are non-None.
+    assert info.pg_host is not None and info.pg_port is not None
     psql_cmd = " ".join(
         [
             f"PGPASSWORD={shlex.quote(password)}",
@@ -181,7 +192,7 @@ def _render_superuser(
         status = f"{gray}existing — password reset to dev default{reset}"
         creds = f"{username} / {password}" if show_secrets else username
     else:
-        status = f"{gray}existing — password unchanged " f"([superuser].overwrite = false){reset}"
+        status = f"{gray}existing — password unchanged ([superuser].overwrite = false){reset}"
         creds = username
 
     out = [f"  {bold}Superuser:{reset} {creds}  ({status})"]
@@ -193,26 +204,50 @@ def _render_superuser(
 def _render_lifecycle(
     *, info: BannerInfo, config: RunSiteConfig, gray: str, bold: str, red: str, reset: str
 ) -> list[str]:
-    """Tell the user whether Postgres + Redis will survive after exit.
+    """Tell the user whether Postgres / Redis will survive after exit.
 
     With ``--reuse`` containers persist (named ``<slug>-runsite-{pg,redis}``)
     so subsequent runs reattach. Without it, ``stop_containers`` runs on
     shutdown and the data is gone — important to know before you load a
     big dump.
+
+    A service that was disabled in config (e.g. SQLite-only / cache-less)
+    is omitted from the wording entirely so we don't talk about removing
+    a container that was never started. When *both* are disabled the
+    whole Lifecycle line is suppressed — there's nothing whose lifecycle
+    we control.
     """
+
+    pg_on = config.postgres.enabled
+    redis_on = config.redis.enabled
+    if not pg_on and not redis_on:
+        return []
+
+    if pg_on and redis_on:
+        services = "Postgres + Redis"
+    elif pg_on:
+        services = "Postgres"
+    else:
+        services = "Redis"
 
     if info.reuse:
         slug = config.project_slug
+        names = []
+        if pg_on:
+            names.append(f"{slug}-runsite-pg")
+        if redis_on:
+            names.append(f"{slug}-runsite-redis")
         return [
-            f"  {bold}Lifecycle:{reset} Postgres + Redis will be {bold}kept{reset} after "
+            f"  {bold}Lifecycle:{reset} {services} will be {bold}kept{reset} after "
             f"exit ({gray}--reuse{reset}).",
             f"             {gray}Drop --reuse for a clean run, or remove with:{reset}",
-            f"             {gray}  docker rm -f {slug}-runsite-pg " f"{slug}-runsite-redis{reset}",
+            f"             {gray}  docker rm -f {' '.join(names)}{reset}",
         ]
     return [
-        f"  {red}{bold}Lifecycle:{reset}{red} Postgres + Redis will be "
+        f"  {red}{bold}Lifecycle:{reset}{red} {services} will be "
         f"{bold}removed{reset}{red} on exit.{reset}",
-        f"             {gray}Pass --reuse to keep them between runs "
+        f"             {gray}Pass --reuse to keep "
+        f"{'them' if pg_on and redis_on else 'it'} between runs "
         f"(faster restart, dump preserved).{reset}",
     ]
 

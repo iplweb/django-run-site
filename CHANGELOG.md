@@ -5,10 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-11
+
+### Added
+
+- **Optional services.** New `[postgres].enabled` and `[redis].enabled`
+  config keys (with matching `--no-postgres` / `--no-redis` CLI flags) let
+  you skip the corresponding testcontainer entirely. A disabled service
+  pulls no image, starts no container, omits its `DEV_HELPERS_*` env
+  vars, drops its `database_url` / `redis_url` / `db_*` / `redis_*`
+  mappings from the project `[env]` lookup, and removes its block from
+  the runtime sidecar. With both Postgres and Redis disabled, the Docker
+  availability check is skipped too — useful for SQLite-only,
+  cache-less stacks on machines without Docker running.
+- `examples/runsite.sqlite.toml` — ready-to-copy SQLite/no-Docker config.
+- The banner gracefully marks disabled services as `disabled` and tailors
+  the `Lifecycle:` line to only the services it actually started (or
+  hides it entirely when nothing was started).
+- `runsite.toml` is now fully optional: with no config file at all,
+  `run-site run` falls back to documented defaults for every section
+  (Postgres + Redis testcontainers, `manage.py` auto-detected,
+  `runserver` on `127.0.0.1`, `admin / admin` superuser, slug derived
+  from the project root). Add config only to override.
+- Auto-derived `project_slug` is now sanitized to `[A-Za-z0-9_.-]+`
+  (falling back to `runsite` for empty / unusable directory names), so
+  project roots with spaces or other oddities don't break validation
+  when the user never sets `project_slug` explicitly.
+
+### Changed
+
+- **PyPI distribution renamed** `run-site` → `django-run-site`. The
+  installed CLI command (`run-site`) and the Python import name
+  (`run_site`) are **unchanged** — only the dist name on PyPI moves, so
+  installation goes from `uv tool install run-site` to
+  `uv tool install django-run-site`. Existing users on `run-site` should
+  uninstall it and install `django-run-site`; everything they invoke
+  afterwards (the `run-site` command, `from run_site import …`,
+  `[tool.run-site]` in `pyproject.toml`) keeps working as before.
+- `uv tool run run-site …` recipes in the docs now use the explicit
+  `uv tool run --from django-run-site run-site …` form, since the
+  distribution name and CLI command name differ.
+
+### Fixed
+
+- Asking for a dump load (`--from-dump` / `[dump].default_path`) with
+  Postgres disabled now fails fast with a clear message instead of
+  attempting to load against a container that was never started.
+- Container teardown on partial-start failures no longer crashes when the
+  half-started service has no container id yet.
+- Sidecar URL rendering URL-encodes the Postgres user/password, matching
+  the contract `build_subprocess_env` already uses, so values with `@`,
+  `/`, `:`, or spaces produce a parseable connection URL.
+
 ## [0.4.0] — 2026-05-07
 
-First release under the new PyPI name **`run-site`** (the Python module
-is `run_site`). The repo continues to live at `iplweb/django-run-site`.
+First release under the (then-new) PyPI name **`run-site`** — note: a
+later Unreleased version renames the distribution again to
+**`django-run-site`** (see above). The Python module is `run_site` and
+the repo continues to live at `iplweb/django-run-site`.
 
 ### Added
 

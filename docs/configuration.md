@@ -12,12 +12,23 @@ CLI flags always override the config.
 ## Top-level keys
 
 ```toml
-project_slug = "myproject"   # required when not derivable from project_root
+project_slug = "myproject"   # optional; auto-derived from the project root
 manage_py = "src/manage.py"  # path to manage.py, relative to project_root
 ```
 
 `project_slug` is used as the Postgres/Redis container name prefix when
-`--reuse` is set.
+`--reuse` is set. If you don't set it, `run-site` derives one from the
+project root directory name (sanitized to `[A-Za-z0-9_.-]+`, falling back
+to `runsite` if the name has no usable characters).
+
+### Running without a config file
+
+`runsite.toml` (and `[tool.run-site]` in `pyproject.toml`) are optional.
+With no config at all, `run-site run` uses the documented defaults for
+every section — Postgres + Redis testcontainers, `manage.py` auto-detected
+from the project root, `runserver` on `127.0.0.1`, an `admin / admin`
+superuser, and the slug derived from the directory name. It's a viable
+starting point; add a config only when you need to override something.
 
 ## `[python]`
 
@@ -44,7 +55,8 @@ The `"auto"` chain (in order):
 
 1. `RUN_SITE_PYTHON` env var.
 2. `<project_root>/.venv/bin/python` (preferred over `$VIRTUAL_ENV` so
-   `uv tool run run-site` doesn't pick the run-site tool's own venv).
+   `uv tool run --from django-run-site run-site` doesn't pick the
+   run-site tool's own venv).
 3. `$VIRTUAL_ENV/bin/python` (ambient activated venv).
 4. `uv run python` (only when `uv.lock` exists and `uv` is on PATH).
 5. `sys.executable`.
@@ -58,6 +70,7 @@ venv and lose `site-packages`.
 
 ```toml
 [postgres]
+enabled = true           # set to false to skip the Postgres container entirely
 image = "postgres:16"
 user = "myproject"
 password = "password"
@@ -68,6 +81,14 @@ stream_logs = true       # prefix PG container logs as `pg | …`
 [postgres.env]
 POSTGRESQL_UNSAFE_BUT_FAST = "1"
 ```
+
+With `enabled = false` (or the equivalent `--no-postgres` CLI flag),
+`run-site` does **not** pull the image or start the container, does **not**
+emit `DEV_HELPERS_DB_*` env vars, does **not** map `database_url` /
+`db_*` into your project's `[env]` vars, and omits the `[postgres]`
+section from the runtime sidecar. Use this when your project is happy
+with SQLite or connects to an external database — your `settings.py`
+stays in charge of `DATABASES['default']`.
 
 `driver` controls the `postgres<driver>://` scheme of `DATABASE_URL`:
 
@@ -84,9 +105,17 @@ that take tuning knobs via env (e.g. BPP's `iplweb/bpp_dbserver`).
 
 ```toml
 [redis]
+enabled = true            # set to false to skip the Redis container entirely
 image = "redis:7-alpine"
 db = 0
 ```
+
+`enabled = false` (or `--no-redis`) follows the same contract as for
+Postgres: no container, no `DEV_HELPERS_REDIS_*` vars, no `redis_url` /
+`redis_host` / `redis_port` mapping, no `[redis]` block in the sidecar.
+
+If you disable both Postgres and Redis, `run-site` skips the Docker
+availability check too — useful for laptops where Docker isn't running.
 
 ## `[containers]`
 

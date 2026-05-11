@@ -99,6 +99,66 @@ def test_invalid_postgres_driver_rejected(tmp_path: Path) -> None:
         load_config(config_path=cfg, project_root=tmp_path)
 
 
+def test_postgres_defaults_to_enabled(tmp_path: Path) -> None:
+    """Backward compat: existing configs without ``enabled`` keep starting
+    Postgres."""
+
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[postgres]\n[redis]\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.postgres.enabled is True
+    assert config.redis.enabled is True
+
+
+def test_postgres_can_be_disabled(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[postgres]\nenabled = false\n[redis]\nenabled = false\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.postgres.enabled is False
+    assert config.redis.enabled is False
+
+
+def test_postgres_enabled_must_be_bool(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[postgres]\nenabled = "yes"\n')
+    with pytest.raises(ConfigError, match="enabled"):
+        load_config(config_path=cfg, project_root=tmp_path)
+
+
+def test_load_config_works_without_any_file(tmp_path: Path) -> None:
+    """Running ``run-site run`` in a directory with no ``runsite.toml``
+    and no ``[tool.run-site]`` produces a usable config — slug derived
+    from the directory name, everything else defaulted."""
+
+    config = load_config(config_path=None, project_root=tmp_path)
+    # tmp_path.name is something like "test_load_config_works_without_any_file0"
+    assert config.project_slug != ""
+    assert config.postgres.enabled is True
+    assert config.redis.enabled is True
+    assert config.django.runserver_bind == "127.0.0.1"
+
+
+def test_project_slug_sanitized_when_dir_name_has_spaces(tmp_path: Path) -> None:
+    weird = tmp_path / "my project (v2)"
+    weird.mkdir()
+    config = load_config(config_path=None, project_root=weird)
+    # Spaces and parens collapse to '-', and the result must match the
+    # strict allowed-chars pattern.
+    import re
+
+    assert re.fullmatch(r"[A-Za-z0-9_.-]+", config.project_slug)
+
+
+def test_explicit_invalid_project_slug_still_rejected(tmp_path: Path) -> None:
+    """Sanitization only kicks in for the auto-derived default; if the
+    user spells out an invalid slug we still error."""
+
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "no spaces allowed"\n')
+    with pytest.raises(ConfigError, match="project_slug"):
+        load_config(config_path=cfg, project_root=tmp_path)
+
+
 def test_python_command_and_executable_mutually_exclusive(tmp_path: Path) -> None:
     cfg = tmp_path / "runsite.toml"
     cfg.write_text(

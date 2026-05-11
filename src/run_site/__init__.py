@@ -18,7 +18,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 try:
-    __version__ = _pkg_version("run-site")
+    __version__ = _pkg_version("django-run-site")
 except PackageNotFoundError:
     # Package metadata is unavailable when running from a source tree that
     # has not been installed (e.g. plain `python -m run_site` without

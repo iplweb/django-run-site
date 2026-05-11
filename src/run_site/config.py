@@ -52,6 +52,7 @@ class PythonConfig:
 
 @dataclass(frozen=True)
 class PostgresConfig:
+    enabled: bool = True
     image: str = "postgres:16"
     user: str = "django"
     password: str = "password"
@@ -63,6 +64,7 @@ class PostgresConfig:
 
 @dataclass(frozen=True)
 class RedisConfig:
+    enabled: bool = True
     image: str = "redis:7-alpine"
     db: int = 0
 
@@ -274,9 +276,20 @@ def _build_config(
     project_root: Path,
     config_path: Path | None,
 ) -> RunSiteConfig:
-    project_slug = _str(raw, "project_slug", default=project_root.name)
-    if not project_slug or not re.fullmatch(r"[A-Za-z0-9_.-]+", project_slug):
-        raise ConfigError(f"Invalid project_slug={project_slug!r}: must match [A-Za-z0-9_.-]+")
+    explicit_slug = raw.get("project_slug")
+    if explicit_slug is None:
+        # No-config / no-slug case: derive from directory name, but sanitize
+        # so dirs with spaces, capital ASCII-friendly chars, or other oddities
+        # don't trip the strict regex.
+        project_slug = _sanitize_default_slug(project_root.name)
+    else:
+        if not isinstance(explicit_slug, str):
+            raise ConfigError(
+                f"Key 'project_slug' must be a string, got {type(explicit_slug).__name__}"
+            )
+        project_slug = explicit_slug
+        if not project_slug or not re.fullmatch(r"[A-Za-z0-9_.-]+", project_slug):
+            raise ConfigError(f"Invalid project_slug={project_slug!r}: must match [A-Za-z0-9_.-]+")
     manage_py = _opt_str(raw, "manage_py")
 
     return RunSiteConfig(
@@ -332,6 +345,7 @@ def _build_postgres(raw: Mapping[str, Any]) -> PostgresConfig:
             raise ConfigError("[postgres.env] keys and values must be strings")
         env[key] = value
     return PostgresConfig(
+        enabled=_bool(raw, "enabled", default=True),
         image=_str(raw, "image", default="postgres:16"),
         user=_str(raw, "user", default="django"),
         password=_str(raw, "password", default="password"),
@@ -346,7 +360,11 @@ def _build_redis(raw: Mapping[str, Any]) -> RedisConfig:
     db = raw.get("db", 0)
     if not isinstance(db, int) or db < 0:
         raise ConfigError("[redis].db must be a non-negative int")
-    return RedisConfig(image=_str(raw, "image", default="redis:7-alpine"), db=db)
+    return RedisConfig(
+        enabled=_bool(raw, "enabled", default=True),
+        image=_str(raw, "image", default="redis:7-alpine"),
+        db=db,
+    )
 
 
 def _build_containers(raw: Mapping[str, Any]) -> ContainersConfig:
@@ -650,6 +668,19 @@ def _build_source(raw: Mapping[str, Any]) -> SourceConfig:
 
 
 _MISSING = object()
+
+
+def _sanitize_default_slug(name: str) -> str:
+    """Return a runsite slug derived from *name*, fitted to [A-Za-z0-9_.-]+.
+
+    Used only when no ``project_slug`` was set in config (so the user did
+    not commit to a name). Any disallowed character collapses to ``-``;
+    if the result is empty (or the directory name was empty), we fall
+    back to ``"runsite"`` so a no-config run still validates.
+    """
+
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-")
+    return cleaned or "runsite"
 
 
 def _str(raw: Mapping[str, Any], key: str, default: Any = _MISSING) -> str:

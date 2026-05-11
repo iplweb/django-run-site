@@ -32,12 +32,18 @@ SECRET_RE = re.compile(r"(?i).*(TOKEN|PASSWORD|SECRET|API_KEY).*")
 class ContainerEndpoints:
     """Subset of :class:`~run_site.containers.RunSiteContainers` info
     needed to build env vars. Decoupled so env builder doesn't depend on
-    docker/testcontainers."""
+    docker/testcontainers.
 
-    pg_host: str
-    pg_port: int
-    redis_host: str
-    redis_port: int
+    Any of ``pg_*`` / ``redis_*`` may be ``None`` when the corresponding
+    service was disabled (``[postgres].enabled = false`` /
+    ``[redis].enabled = false``) and never started. Consumers must treat
+    those as "not available" and skip emitting the related env vars.
+    """
+
+    pg_host: str | None
+    pg_port: int | None
+    redis_host: str | None
+    redis_port: int | None
 
 
 def generate_autologin_token() -> str:
@@ -82,15 +88,23 @@ def build_subprocess_env(
     # Project extras ([env.extra]).
     env.update(config.env.extra)
 
-    # DEV_HELPERS_* contract (always set, regardless of mapping).
+    # DEV_HELPERS_* contract — only set per-service vars when that
+    # service is enabled and we therefore have real endpoint values.
+    # AUTOLOGIN_* and PROJECT_ROOT are unconditional.
     env["DEV_HELPERS_AUTOLOGIN_TOKEN"] = autologin_token
     env["DEV_HELPERS_AUTOLOGIN_USERNAME"] = config.superuser.username
-    env["DEV_HELPERS_DB_HOST"] = endpoints.pg_host
-    env["DEV_HELPERS_DB_PORT"] = str(endpoints.pg_port)
-    env["DEV_HELPERS_DB_NAME"] = config.postgres.db
-    env["DEV_HELPERS_DB_USER"] = config.postgres.user
-    env["DEV_HELPERS_REDIS_HOST"] = endpoints.redis_host
-    env["DEV_HELPERS_REDIS_PORT"] = str(endpoints.redis_port)
+    if config.postgres.enabled and endpoints.pg_host is not None and endpoints.pg_port is not None:
+        env["DEV_HELPERS_DB_HOST"] = endpoints.pg_host
+        env["DEV_HELPERS_DB_PORT"] = str(endpoints.pg_port)
+        env["DEV_HELPERS_DB_NAME"] = config.postgres.db
+        env["DEV_HELPERS_DB_USER"] = config.postgres.user
+    if (
+        config.redis.enabled
+        and endpoints.redis_host is not None
+        and endpoints.redis_port is not None
+    ):
+        env["DEV_HELPERS_REDIS_HOST"] = endpoints.redis_host
+        env["DEV_HELPERS_REDIS_PORT"] = str(endpoints.redis_port)
     env["DEV_HELPERS_PROJECT_ROOT"] = str(config.project_root.resolve())
     if runserver_port is not None:
         env["DEV_HELPERS_PORT"] = str(runserver_port)
@@ -104,25 +118,39 @@ def build_subprocess_env(
 
 
 def _project_values(config: RunSiteConfig, endpoints: ContainerEndpoints) -> dict[str, str]:
+    """Build the lookup dict consumed by the project ``[env]`` mapping.
+
+    Keys for a disabled service are omitted entirely — so a user with
+    ``[postgres].enabled = false`` who still maps ``database_url`` will
+    simply not get that var set, instead of getting a broken URL pointing
+    at None:None.
+    """
+
+    out: dict[str, str] = {}
     pg = config.postgres
-    quoted_pwd = urllib.parse.quote_plus(pg.password)
-    quoted_user = urllib.parse.quote_plus(pg.user)
-    database_url = (
-        f"postgres{pg.driver}://{quoted_user}:{quoted_pwd}"
-        f"@{endpoints.pg_host}:{endpoints.pg_port}/{pg.db}"
-    )
-    redis_url = f"redis://{endpoints.redis_host}:{endpoints.redis_port}/{config.redis.db}"
-    return {
-        "database_url": database_url,
-        "db_host": endpoints.pg_host,
-        "db_port": str(endpoints.pg_port),
-        "db_name": pg.db,
-        "db_user": pg.user,
-        "db_password": pg.password,
-        "redis_url": redis_url,
-        "redis_host": endpoints.redis_host,
-        "redis_port": str(endpoints.redis_port),
-    }
+    if pg.enabled and endpoints.pg_host is not None and endpoints.pg_port is not None:
+        quoted_pwd = urllib.parse.quote_plus(pg.password)
+        quoted_user = urllib.parse.quote_plus(pg.user)
+        database_url = (
+            f"postgres{pg.driver}://{quoted_user}:{quoted_pwd}"
+            f"@{endpoints.pg_host}:{endpoints.pg_port}/{pg.db}"
+        )
+        out["database_url"] = database_url
+        out["db_host"] = endpoints.pg_host
+        out["db_port"] = str(endpoints.pg_port)
+        out["db_name"] = pg.db
+        out["db_user"] = pg.user
+        out["db_password"] = pg.password
+    if (
+        config.redis.enabled
+        and endpoints.redis_host is not None
+        and endpoints.redis_port is not None
+    ):
+        redis_url = f"redis://{endpoints.redis_host}:{endpoints.redis_port}/{config.redis.db}"
+        out["redis_url"] = redis_url
+        out["redis_host"] = endpoints.redis_host
+        out["redis_port"] = str(endpoints.redis_port)
+    return out
 
 
 def format_env_for_print(

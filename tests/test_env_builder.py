@@ -154,3 +154,84 @@ def test_generate_autologin_token_is_random() -> None:
     a, b = generate_autologin_token(), generate_autologin_token()
     assert a != b
     assert len(a) > 30
+
+
+# ---------------------------------------------------------------------------
+# Disabled-service paths — SQLite / cache-less stacks
+# ---------------------------------------------------------------------------
+
+
+def test_dev_helpers_db_vars_omitted_when_postgres_disabled(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text('project_slug = "demo"\n[postgres]\nenabled = false\n[redis]\n')
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    endpoints = ContainerEndpoints(
+        pg_host=None, pg_port=None, redis_host="127.0.0.1", redis_port=49153
+    )
+    env = build_subprocess_env(
+        config=config,
+        endpoints=endpoints,
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+    )
+    # Autologin contract is unconditional.
+    assert env["DEV_HELPERS_AUTOLOGIN_TOKEN"] == "tok"
+    # No DB env vars — caller must not see broken None:None values.
+    assert "DEV_HELPERS_DB_HOST" not in env
+    assert "DEV_HELPERS_DB_PORT" not in env
+    assert "DEV_HELPERS_DB_NAME" not in env
+    assert "DEV_HELPERS_DB_USER" not in env
+    # Redis still set.
+    assert env["DEV_HELPERS_REDIS_HOST"] == "127.0.0.1"
+
+
+def test_project_env_mapping_skips_disabled_postgres(tmp_path: Path) -> None:
+    """A project that maps ``database_url`` while running without
+    Postgres must not get a URL pointing at None:None — the var simply
+    isn't set, and the user's ``settings.py`` falls back to its own
+    SQLite default."""
+
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text(
+        'project_slug = "demo"\n'
+        "[postgres]\nenabled = false\n"
+        "[redis]\n"
+        '[env]\ndatabase_url = "DATABASE_URL"\n'
+    )
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    endpoints = ContainerEndpoints(
+        pg_host=None, pg_port=None, redis_host="127.0.0.1", redis_port=49153
+    )
+    env = build_subprocess_env(
+        config=config,
+        endpoints=endpoints,
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+    )
+    assert "DATABASE_URL" not in env
+
+
+def test_redis_vars_omitted_when_redis_disabled(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text(
+        'project_slug = "demo"\n[postgres]\n[redis]\nenabled = false\n'
+        '[env]\nredis_url = "REDIS_URL"\n'
+    )
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    endpoints = ContainerEndpoints(
+        pg_host="127.0.0.1", pg_port=54321, redis_host=None, redis_port=None
+    )
+    env = build_subprocess_env(
+        config=config,
+        endpoints=endpoints,
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+    )
+    assert "DEV_HELPERS_REDIS_HOST" not in env
+    assert "DEV_HELPERS_REDIS_PORT" not in env
+    assert "REDIS_URL" not in env
+    # DB still wired.
+    assert env["DEV_HELPERS_DB_HOST"] == "127.0.0.1"
