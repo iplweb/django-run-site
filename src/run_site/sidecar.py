@@ -78,6 +78,10 @@ class SidecarInfo:
     redis_db: int | None
     celery_enabled: bool
     celery_app: str | None
+    # Absolute path to the managed SQLite file, or ``None`` when SQLite
+    # mode is off.
+    sqlite_path: str | None = None
+    sqlite_ephemeral: bool = False
 
 
 def sidecar_path(project_root: Path) -> Path:
@@ -151,6 +155,17 @@ def _render(info: SidecarInfo) -> str:
                 f"user = {s(info.pg_user)}",
                 f"password = {s(info.pg_password)}",
                 f"url = {s(pg_url)}",
+            ]
+        )
+
+    if info.sqlite_path is not None:
+        lines.extend(
+            [
+                "",
+                "[sqlite]",
+                f"path = {s(info.sqlite_path)}",
+                f"url = {s(f'sqlite:///{info.sqlite_path}')}",
+                f"ephemeral = {str(info.sqlite_ephemeral).lower()}",
             ]
         )
 

@@ -239,9 +239,7 @@ def test_lifecycle_mentions_only_enabled_service_postgres_only(
     config: RunSiteConfig,
 ) -> None:
     cfg = replace(config, redis=replace(config.redis, enabled=False))
-    out = _strip_ansi(
-        render_banner(config=cfg, info=_make_info(redis_host=None, redis_port=None))
-    )
+    out = _strip_ansi(render_banner(config=cfg, info=_make_info(redis_host=None, redis_port=None)))
     # The Lifecycle line names *only* the service that actually runs.
     assert "Lifecycle:" in out
     assert "Postgres will be" in out
@@ -252,9 +250,7 @@ def test_lifecycle_mentions_only_enabled_service_redis_only(
     config: RunSiteConfig,
 ) -> None:
     cfg = replace(config, postgres=replace(config.postgres, enabled=False))
-    out = _strip_ansi(
-        render_banner(config=cfg, info=_make_info(pg_host=None, pg_port=None))
-    )
+    out = _strip_ansi(render_banner(config=cfg, info=_make_info(pg_host=None, pg_port=None)))
     assert "Lifecycle:" in out
     assert "Redis will be" in out
     assert "Postgres + Redis" not in out
@@ -269,9 +265,7 @@ def test_lifecycle_reuse_uses_only_enabled_container_in_docker_rm(
 
     cfg = replace(config, redis=replace(config.redis, enabled=False))
     out = _strip_ansi(
-        render_banner(
-            config=cfg, info=_make_info(reuse=True, redis_host=None, redis_port=None)
-        )
+        render_banner(config=cfg, info=_make_info(reuse=True, redis_host=None, redis_port=None))
     )
     assert "docker rm -f demo-runsite-pg" in out
     assert "demo-runsite-redis" not in out

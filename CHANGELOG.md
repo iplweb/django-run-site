@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-05-11
+
+### Added
+
+- **Managed SQLite mode.** New `[sqlite]` section + `--sqlite` / `--no-sqlite`
+  CLI flags. With `--reuse`, run-site keeps the file at
+  `<project_root>/.run-site/<slug>.sqlite3` (or an explicit
+  `[sqlite].path`) across runs. Without `--reuse`, the DB is a random
+  temp file removed on exit — mirroring the ephemeral testcontainer
+  behavior. `database_url` is exposed to the project as
+  `sqlite:///<abspath>` via the standard `[env]` mapping.
+- **Tri-state `enabled`.** `[postgres].enabled`, `[redis].enabled`, and
+  `[sqlite].enabled` now accept `true | false | "auto"`. The
+  `"auto"` value statically scans your project's settings module
+  (following one level of `from .base import *`) for engine strings
+  (`django.db.backends.{postgresql,sqlite3}`), URL schemes
+  (`postgres://`, `sqlite:///`), and Redis hints (`django_redis`,
+  `RedisCache`, `redis://`, `CELERY_BROKER_URL`). Defaults: postgres
+  and redis stay `true` (backward compatible); sqlite is `"auto"`.
+- **`.gitignore` warning.** When run-site creates the persistent
+  `.run-site/` directory for a `--reuse` SQLite file, it checks
+  `.gitignore` and warns if `.run-site` isn't listed.
+- Sidecar gains a `[sqlite]` block (path + url + ephemeral flag) when
+  SQLite mode is active, alongside the existing `[postgres]` / `[redis]`
+  blocks.
+
+### Fixed
+
+- `--from-dump` / `[dump].default_path` requested under SQLite mode now
+  fails fast with a clear message (mirroring the existing
+  `--no-postgres` + dump refusal).
+
 ## [0.5.0] — 2026-05-11
 
 ### Added

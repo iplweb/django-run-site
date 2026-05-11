@@ -206,9 +206,7 @@ def test_discover_manage_py_relative_cli_anchors_to_project_root(tmp_path: Path)
     cwd = tmp_path / "unrelated"
     cwd.mkdir()
     cfg = load_config(config_path=None, project_root=project_root)
-    resolved = discover_manage_py(
-        cli_manage=Path("test_project/manage.py"), config=cfg
-    )
+    resolved = discover_manage_py(cli_manage=Path("test_project/manage.py"), config=cfg)
     assert resolved == target.resolve()
 
 
@@ -238,9 +236,7 @@ def test_discover_local_python_relative_cli_anchors_to_project_root(
     cfg_path = project_root / "runsite.toml"
     cfg_path.write_text('project_slug = "x"\n')
     cfg = load_config(config_path=cfg_path, project_root=project_root)
-    python = discover_local_python(
-        cli_python=Path(".venv/bin/python"), config=cfg, env={}
-    )
+    python = discover_local_python(cli_python=Path(".venv/bin/python"), config=cfg, env={})
     assert python == (str(target.resolve()),)
 
 

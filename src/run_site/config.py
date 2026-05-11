@@ -21,6 +21,11 @@ RyukMode = Literal["auto", "true", "false"]
 SourceType = Literal["git", "path"]
 HookType = Literal["command", "django"]
 LogColor = Literal["cyan", "green", "yellow", "magenta", "blue", "red", "white"]
+# Tri-state used by service ``enabled`` fields. ``"auto"`` means: detect
+# from the project's settings.py whether the service is actually used,
+# and resolve to True / False at run start. The dataclass keeps the raw
+# tri-state value; CLI flow resolves it before starting anything.
+EnabledTri = Literal[True, False, "auto"]
 
 VALID_LOG_COLORS: frozenset[str] = frozenset(
     ["cyan", "green", "yellow", "magenta", "blue", "red", "white"]
@@ -52,7 +57,7 @@ class PythonConfig:
 
 @dataclass(frozen=True)
 class PostgresConfig:
-    enabled: bool = True
+    enabled: EnabledTri = True
     image: str = "postgres:16"
     user: str = "django"
     password: str = "password"
@@ -64,9 +69,28 @@ class PostgresConfig:
 
 @dataclass(frozen=True)
 class RedisConfig:
-    enabled: bool = True
+    enabled: EnabledTri = True
     image: str = "redis:7-alpine"
     db: int = 0
+
+
+@dataclass(frozen=True)
+class SqliteConfig:
+    """Managed SQLite database.
+
+    When :attr:`enabled` resolves true, run-site picks a path (random tmp
+    for ephemeral, ``.run-site/<slug>.sqlite3`` under the project root
+    when ``--reuse``) and exposes it to the project via the standard
+    ``database_url`` / ``db_name`` ``[env]`` mapping. Mutually exclusive
+    with Postgres — both being explicit-true at the same time is a
+    config error.
+    """
+
+    enabled: EnabledTri = "auto"
+    # Optional override of the persistent path used with --reuse.
+    # Relative paths anchor to the project root. ``None`` = use
+    # ``.run-site/<slug>.sqlite3``.
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +212,7 @@ class RunSiteConfig:
     python: PythonConfig
     postgres: PostgresConfig
     redis: RedisConfig
+    sqlite: SqliteConfig
     containers: ContainersConfig
     dump: DumpConfig
     env: EnvConfig
@@ -206,6 +231,87 @@ class RunSiteConfig:
 # ---------------------------------------------------------------------------
 # Loader
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DetectedServices:
+    """Outcome of scanning ``settings.py`` for service usage.
+
+    Each flag is ``True`` when the static scan found positive evidence
+    that the project uses that service, ``False`` otherwise. ``None`` for
+    every field means we couldn't locate or parse a settings module at
+    all — auto-resolve should fall back to safe defaults and warn.
+    """
+
+    postgres: bool
+    sqlite: bool
+    redis: bool
+
+
+def resolve_auto_enabled(
+    config: RunSiteConfig,
+    *,
+    detected: DetectedServices | None,
+) -> tuple[RunSiteConfig, list[str]]:
+    """Resolve any ``"auto"`` ``enabled`` field to a concrete ``bool``.
+
+    Returns the updated config plus a list of human-readable notes the
+    caller should surface (e.g. via the log multiplexer or stderr).
+
+    Auto-resolution rules:
+
+    * ``postgres.enabled = "auto"``: True iff settings.py shows PG.
+    * ``sqlite.enabled = "auto"``: True iff settings.py shows SQLite *and*
+      ``postgres.enabled`` did not resolve to True (PG wins).
+    * ``redis.enabled = "auto"``: True iff settings.py shows Redis.
+
+    When *detected* is ``None`` (couldn't scan settings.py), every
+    ``"auto"`` value becomes ``False`` and a single note is appended.
+    """
+
+    notes: list[str] = []
+
+    if detected is None:
+        scanned = DetectedServices(postgres=False, sqlite=False, redis=False)
+        if (
+            config.postgres.enabled == "auto"
+            or config.sqlite.enabled == "auto"
+            or config.redis.enabled == "auto"
+        ):
+            notes.append(
+                "Could not locate or parse settings.py; 'auto' fields "
+                "resolved to false. Set [postgres|redis|sqlite].enabled "
+                "explicitly to override."
+            )
+    else:
+        scanned = detected
+
+    pg_enabled = config.postgres.enabled
+    if pg_enabled == "auto":
+        pg_enabled = scanned.postgres
+        notes.append(f"[postgres].enabled auto → {pg_enabled}")
+    sqlite_enabled = config.sqlite.enabled
+    if sqlite_enabled == "auto":
+        # PG wins when both detected and SQLite is in auto.
+        sqlite_enabled = bool(scanned.sqlite and not pg_enabled)
+        notes.append(f"[sqlite].enabled auto → {sqlite_enabled}")
+    redis_enabled = config.redis.enabled
+    if redis_enabled == "auto":
+        redis_enabled = scanned.redis
+        notes.append(f"[redis].enabled auto → {redis_enabled}")
+
+    # Post-resolution mutual-exclusion check (defensive — _build_config
+    # already refuses the static case where both are explicit-true).
+    if pg_enabled is True and sqlite_enabled is True:
+        raise ConfigError(
+            "Postgres and SQLite both resolved to enabled. Set one of "
+            "[postgres].enabled / [sqlite].enabled = false explicitly."
+        )
+
+    new_postgres = replace(config.postgres, enabled=pg_enabled)
+    new_redis = replace(config.redis, enabled=redis_enabled)
+    new_sqlite = replace(config.sqlite, enabled=sqlite_enabled)
+    return replace(config, postgres=new_postgres, redis=new_redis, sqlite=new_sqlite), notes
 
 
 def find_config(start: Path) -> Path | None:
@@ -292,14 +398,28 @@ def _build_config(
             raise ConfigError(f"Invalid project_slug={project_slug!r}: must match [A-Za-z0-9_.-]+")
     manage_py = _opt_str(raw, "manage_py")
 
+    postgres = _build_postgres(raw.get("postgres", {}))
+    redis = _build_redis(raw.get("redis", {}))
+    sqlite = _build_sqlite(raw.get("sqlite", {}))
+    # Both Postgres and SQLite explicitly enabled = config error. ``"auto"``
+    # on either side is fine — the run flow does a single detection pass
+    # and resolves at most one to True.
+    if postgres.enabled is True and sqlite.enabled is True:
+        raise ConfigError(
+            "[postgres].enabled = true and [sqlite].enabled = true are mutually "
+            "exclusive — pick one DB. Set [postgres].enabled = false or "
+            "[sqlite].enabled = false (or leave one as 'auto')."
+        )
+
     return RunSiteConfig(
         project_root=project_root,
         config_path=config_path,
         project_slug=project_slug,
         manage_py=manage_py,
         python=_build_python(raw.get("python", {})),
-        postgres=_build_postgres(raw.get("postgres", {})),
-        redis=_build_redis(raw.get("redis", {})),
+        postgres=postgres,
+        redis=redis,
+        sqlite=sqlite,
         containers=_build_containers(raw.get("containers", {})),
         dump=_build_dump(raw.get("dump", {})),
         env=_build_env(raw.get("env", {})),
@@ -345,7 +465,7 @@ def _build_postgres(raw: Mapping[str, Any]) -> PostgresConfig:
             raise ConfigError("[postgres.env] keys and values must be strings")
         env[key] = value
     return PostgresConfig(
-        enabled=_bool(raw, "enabled", default=True),
+        enabled=_enabled_tri(raw, "[postgres].enabled", default=True),
         image=_str(raw, "image", default="postgres:16"),
         user=_str(raw, "user", default="django"),
         password=_str(raw, "password", default="password"),
@@ -361,9 +481,19 @@ def _build_redis(raw: Mapping[str, Any]) -> RedisConfig:
     if not isinstance(db, int) or db < 0:
         raise ConfigError("[redis].db must be a non-negative int")
     return RedisConfig(
-        enabled=_bool(raw, "enabled", default=True),
+        enabled=_enabled_tri(raw, "[redis].enabled", default=True),
         image=_str(raw, "image", default="redis:7-alpine"),
         db=db,
+    )
+
+
+def _build_sqlite(raw: Mapping[str, Any]) -> SqliteConfig:
+    path = _opt_str(raw, "path")
+    if path is not None and not path.strip():
+        raise ConfigError("[sqlite].path must not be empty when set")
+    return SqliteConfig(
+        enabled=_enabled_tri(raw, "[sqlite].enabled", default="auto"),
+        path=path,
     )
 
 
@@ -706,3 +836,14 @@ def _bool(raw: Mapping[str, Any], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"Key {key!r} must be a bool")
     return value
+
+
+def _enabled_tri(raw: Mapping[str, Any], label: str, default: EnabledTri) -> EnabledTri:
+    """Parse a tri-state ``enabled`` field: ``true | false | "auto"``."""
+
+    value = raw.get("enabled", default)
+    if isinstance(value, bool):
+        return value
+    if value == "auto":
+        return "auto"
+    raise ConfigError(f"{label} must be true, false, or 'auto', got {value!r}")

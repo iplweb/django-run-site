@@ -21,7 +21,7 @@ from typing import Any
 
 from run_site import __version__
 from run_site.banner import BannerInfo, render_banner
-from run_site.config import HookConfig, RunSiteConfig, load_config
+from run_site.config import HookConfig, RunSiteConfig, load_config, resolve_auto_enabled
 from run_site.containers import (
     RunSiteContainers,
     assert_docker_available,
@@ -29,6 +29,7 @@ from run_site.containers import (
     stop_containers,
 )
 from run_site.discovery import (
+    detect_services_from_settings,
     discover_local_python,
     discover_manage_py,
     discover_project_root,
@@ -60,6 +61,12 @@ from run_site.source.from_git import (
 )
 from run_site.source.from_path import resolve_path_source
 from run_site.source.venv_setup import ensure_venv
+from run_site.sqlite import (
+    SqliteState,
+    cleanup_sqlite,
+    gitignore_warning,
+    prepare_sqlite,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +238,19 @@ def _build_full_parser(
         "--no-redis",
         action="store_true",
         help="Don't pull / start a Redis container.",
+    )
+    cont.add_argument(
+        "--sqlite",
+        dest="sqlite",
+        action="store_true",
+        default=None,
+        help="Force-enable managed SQLite mode (overrides [sqlite].enabled).",
+    )
+    cont.add_argument(
+        "--no-sqlite",
+        dest="sqlite",
+        action="store_false",
+        help="Disable managed SQLite mode (overrides [sqlite].enabled).",
     )
 
     dump = parser.add_argument_group("Dump")
@@ -418,6 +438,9 @@ def _execute_run(
     manage_py = discover_manage_py(cli_manage=opts.manage_py, config=config)
 
     if opts.dry_run:
+        # Resolve "auto" so the dry-run report shows the same enabled values
+        # as a real run would produce.
+        config = _resolve_services(config=config, manage_py=manage_py, mux=None)
         # Local Python may not exist yet for fresh checkouts, fall back gracefully.
         try:
             python = discover_local_python(cli_python=opts.python, config=config)
@@ -433,16 +456,18 @@ def _execute_run(
 
     python = discover_local_python(cli_python=opts.python, config=config)
 
-    # Docker is only required when at least one service will be started.
-    # ``[postgres].enabled = false`` + ``[redis].enabled = false`` (or the
-    # equivalent ``--no-postgres --no-redis``) means we never touch Docker
-    # at all — useful for SQLite-only / cache-less stacks.
-    if config.postgres.enabled or config.redis.enabled:
-        assert_docker_available()
-
     disabled_hooks = _collect_disabled_hooks(config.hooks, opts)
     hook_opts = _collect_hook_opts(config.hooks, opts)
     mux = LogMultiplexer()
+
+    # Resolve "auto" using settings.py detection. Done after mux so we can
+    # surface the detection notes immediately.
+    config = _resolve_services(config=config, manage_py=manage_py, mux=mux)
+
+    # Docker is only required when at least one container service will be
+    # started. SQLite mode doesn't need Docker even if PG/Redis are both off.
+    if config.postgres.enabled or config.redis.enabled:
+        assert_docker_available()
 
     # Pre-containers hooks (host only).
     run_hooks(
@@ -474,6 +499,20 @@ def _execute_run(
     # creation; the post-start branch handles reuse.
     init_script = _maybe_init_script(config=config, opts=opts)
 
+    sqlite_state: SqliteState | None = None
+    if config.sqlite.enabled:
+        sqlite_state = prepare_sqlite(
+            config=config,
+            reuse=opts.reuse,
+            force_reset=getattr(opts, "force_reset", False),
+        )
+        mode = "persistent" if not sqlite_state.ephemeral else "ephemeral"
+        mux.write("sqlite", "blue", f"[sqlite] {mode}: {sqlite_state.path}")
+        if not sqlite_state.ephemeral:
+            warning = gitignore_warning(project_root=config.project_root)
+            if warning is not None:
+                mux.write("sqlite", "yellow", f"[sqlite] WARNING: {warning}")
+
     containers = start_containers(config=config, reuse=opts.reuse, init_script=init_script)
     runserver_port = opts.port or find_free_port(config.django.runserver_bind)
     autologin_token = generate_autologin_token()
@@ -486,6 +525,7 @@ def _execute_run(
             pg_port=containers.pg_port,
             redis_host=containers.redis_host,
             redis_port=containers.redis_port,
+            sqlite_path=str(sqlite_state.path) if sqlite_state else None,
         )
         env_for_subprocess = build_subprocess_env(
             config=config,
@@ -510,6 +550,8 @@ def _execute_run(
             if not opts.reuse:
                 with _suppress():
                     stop_containers(containers)
+                with _suppress():
+                    cleanup_sqlite(sqlite_state)
             return 0
 
         # post_containers hooks.
@@ -534,13 +576,18 @@ def _execute_run(
 
         # Dump (re-plan now that we know pg_created). When Postgres is
         # disabled we have no container to load a dump into; refuse loudly
-        # if the user asked for one, otherwise just skip.
+        # if the user asked for one, otherwise just skip. Same applies to
+        # SQLite mode — pg_dump-style restores don't apply.
         if not config.postgres.enabled:
             dump_was_requested = opts.from_dump is not None or config.dump.default_path is not None
             if dump_was_requested and not opts.no_dump:
+                reason = (
+                    "SQLite mode is active"
+                    if config.sqlite.enabled
+                    else "Postgres is disabled ([postgres].enabled = false or --no-postgres)"
+                )
                 raise RunSiteError(
-                    "Postgres is disabled ([postgres].enabled = false or "
-                    "--no-postgres) but a dump was requested. Either drop "
+                    f"{reason} but a dump was requested. Either drop "
                     "--from-dump / [dump].default_path, or pass --no-dump."
                 )
             plan = None
@@ -656,6 +703,8 @@ def _execute_run(
                 redis_db=config.redis.db if config.redis.enabled else None,
                 celery_enabled=_celery_active(config, opts),
                 celery_app=config.celery.app,
+                sqlite_path=str(sqlite_state.path) if sqlite_state else None,
+                sqlite_ephemeral=bool(sqlite_state and sqlite_state.ephemeral),
             ),
         )
 
@@ -703,6 +752,8 @@ def _execute_run(
                 reuse=opts.reuse,
                 sidecar_path=sidecar_path,
                 superuser=superuser_payload,
+                sqlite_path=sqlite_state.path if sqlite_state else None,
+                sqlite_ephemeral=bool(sqlite_state and sqlite_state.ephemeral),
             ),
         )
         sys.stdout.write(banner)
@@ -821,6 +872,7 @@ def _execute_run(
         return _shutdown(
             proc_group=proc_group,
             containers=containers,
+            sqlite_state=sqlite_state,
             opts=opts,
             python=python,
             manage_py=manage_py,
@@ -834,6 +886,8 @@ def _execute_run(
         with _suppress():
             stop_containers(containers)
         with _suppress():
+            cleanup_sqlite(sqlite_state)
+        with _suppress():
             remove_sidecar(project_root=config.project_root)
         raise
 
@@ -846,6 +900,7 @@ def _shutdown(
     *,
     proc_group: ProcessGroup,
     containers: RunSiteContainers,
+    sqlite_state: SqliteState | None,
     opts: argparse.Namespace,
     python: tuple[str, ...],
     manage_py: Path,
@@ -869,6 +924,8 @@ def _shutdown(
     if not opts.reuse:
         with _suppress():
             stop_containers(containers)
+        with _suppress():
+            cleanup_sqlite(sqlite_state)
     with _suppress():
         remove_sidecar(project_root=config.project_root)
     primary = proc_group.primary()
@@ -946,6 +1003,12 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
         redis = replace(redis, image=opts.redis_image)
     if getattr(opts, "no_redis", False):
         redis = replace(redis, enabled=False)
+    sqlite = config.sqlite
+    sqlite_opt = getattr(opts, "sqlite", None)
+    if sqlite_opt is True:
+        sqlite = replace(sqlite, enabled=True)
+    elif sqlite_opt is False:
+        sqlite = replace(sqlite, enabled=False)
     dj = config.django
     if opts.bind:
         dj = replace(dj, runserver_bind=opts.bind)
@@ -956,7 +1019,39 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     # drives venv setup downstream.
     if config.source.no_install and not opts.no_install:
         opts.no_install = True
-    return replace(config, postgres=pg, redis=redis, django=dj, dump=dump)
+    return replace(config, postgres=pg, redis=redis, sqlite=sqlite, django=dj, dump=dump)
+
+
+def _resolve_services(
+    *,
+    config: RunSiteConfig,
+    manage_py: Path,
+    mux: LogMultiplexer | None,
+) -> RunSiteConfig:
+    """Resolve ``"auto"`` ``enabled`` fields by scanning settings.py.
+
+    Idempotent for configs with no remaining ``"auto"`` values: still
+    calls :func:`resolve_auto_enabled` which is a cheap no-op then.
+    """
+
+    needs_detection = (
+        config.postgres.enabled == "auto"
+        or config.redis.enabled == "auto"
+        or config.sqlite.enabled == "auto"
+    )
+    detected = (
+        detect_services_from_settings(
+            manage_py=manage_py,
+            project_root=config.project_root,
+        )
+        if needs_detection
+        else None
+    )
+    resolved, notes = resolve_auto_enabled(config, detected=detected)
+    if mux is not None:
+        for note in notes:
+            mux.write("config", "blue", f"[config] {note}")
+    return resolved
 
 
 def _maybe_init_script(*, config, opts) -> Path | None:
@@ -1089,6 +1184,11 @@ def _dry_run_report(
         sys.stdout.write(f"redis image:    {config.redis.image}\n")
     else:
         sys.stdout.write("redis image:    <disabled>\n")
+    if config.sqlite.enabled:
+        sqlite_mode = "persistent (--reuse)" if opts.reuse else "ephemeral"
+        sys.stdout.write(f"sqlite:         {sqlite_mode}\n")
+    else:
+        sys.stdout.write("sqlite:         <disabled>\n")
     sys.stdout.write(f"celery enabled: {config.celery.enabled}\n")
     sys.stdout.write(f"hooks:          {len(config.hooks)} declared\n")
     if git_source is not None:

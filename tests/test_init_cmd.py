@@ -231,9 +231,7 @@ def test_init_falls_back_to_pyproject_name(tmp_path: Path, monkeypatch, capsys) 
     """No Django module found → use pyproject name."""
 
     (tmp_path / "manage.py").write_text("")
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "fancy-app"\nversion = "0.0.0"\n'
-    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "fancy-app"\nversion = "0.0.0"\n')
     monkeypatch.chdir(tmp_path)
 
     code, _out, _ = run_cli(["init"], capsys)
@@ -242,13 +240,10 @@ def test_init_falls_back_to_pyproject_name(tmp_path: Path, monkeypatch, capsys) 
     assert data["project_slug"] == "fancy-app"
 
 
-def test_init_warns_on_existing_pyproject_section(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_init_warns_on_existing_pyproject_section(tmp_path: Path, monkeypatch, capsys) -> None:
     _make_django_project(tmp_path, module_name="myproj")
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "x"\nversion = "0.0.0"\n'
-        '[tool.run-site]\nproject_slug = "x"\n'
+        '[project]\nname = "x"\nversion = "0.0.0"\n[tool.run-site]\nproject_slug = "x"\n'
     )
     monkeypatch.chdir(tmp_path)
 
@@ -264,9 +259,7 @@ def test_init_errors_without_manage_py(tmp_path: Path, monkeypatch, capsys) -> N
     assert "manage.py" in err
 
 
-def test_init_output_loadable_by_load_config(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_init_output_loadable_by_load_config(tmp_path: Path, monkeypatch, capsys) -> None:
     """The generated file must round-trip through the real config loader."""
 
     _make_django_project(tmp_path, module_name="myproj", with_celery=True)
@@ -290,9 +283,7 @@ def test_init_custom_output(tmp_path: Path, monkeypatch, capsys) -> None:
     assert target.is_file()
 
 
-def test_init_emits_uv_run_when_uv_on_path(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_init_emits_uv_run_when_uv_on_path(tmp_path: Path, monkeypatch, capsys) -> None:
     _enable_uv(monkeypatch)
     _make_django_project(tmp_path, module_name="myproj")
     monkeypatch.chdir(tmp_path)
@@ -312,9 +303,7 @@ def test_init_emits_uv_run_when_uv_on_path(
     assert config.python.executable == "auto"  # default; ignored when command is set
 
 
-def test_init_falls_back_to_executable_auto_without_uv(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_init_falls_back_to_executable_auto_without_uv(tmp_path: Path, monkeypatch, capsys) -> None:
     # _stable_uv_detection autouse fixture already sets which() → None.
     _make_django_project(tmp_path, module_name="myproj")
     monkeypatch.chdir(tmp_path)

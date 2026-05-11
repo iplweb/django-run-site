@@ -37,6 +37,9 @@ class BannerInfo:
     # ``{"username", "email", "created"}`` from setup_superuser, or None when
     # superuser setup was skipped (config disabled or ``--no-superuser``).
     superuser: Mapping[str, object] | None = None
+    # Managed SQLite info — ``None`` when SQLite mode is off.
+    sqlite_path: Path | None = None
+    sqlite_ephemeral: bool = False
 
 
 def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
@@ -80,6 +83,10 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
                 f"password={config.postgres.password}"
             )
             lines.extend(_render_postgres_helpers(info=info, config=config, gray=gray, reset=reset))
+    elif info.sqlite_path is not None:
+        kind = "ephemeral — removed on exit" if info.sqlite_ephemeral else "persisted across runs"
+        lines.append(f"  {bold}{yellow}SQLite:{reset}   {info.sqlite_path}")
+        lines.append(f"           {gray}({kind}){reset}")
     else:
         lines.append(f"  {bold}{yellow}Postgres:{reset} {gray}disabled{reset}")
     if info.redis_host is not None and info.redis_port is not None:

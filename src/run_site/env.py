@@ -34,16 +34,18 @@ class ContainerEndpoints:
     needed to build env vars. Decoupled so env builder doesn't depend on
     docker/testcontainers.
 
-    Any of ``pg_*`` / ``redis_*`` may be ``None`` when the corresponding
-    service was disabled (``[postgres].enabled = false`` /
-    ``[redis].enabled = false``) and never started. Consumers must treat
-    those as "not available" and skip emitting the related env vars.
+    Any of ``pg_*`` / ``redis_*`` / ``sqlite_path`` may be ``None`` when
+    the corresponding service was disabled (``[postgres].enabled =
+    false`` / ``[redis].enabled = false`` / ``[sqlite].enabled = false``)
+    and never started. Consumers must treat those as "not available" and
+    skip emitting the related env vars.
     """
 
     pg_host: str | None
     pg_port: int | None
     redis_host: str | None
     redis_port: int | None
+    sqlite_path: str | None = None
 
 
 def generate_autologin_token() -> str:
@@ -98,6 +100,11 @@ def build_subprocess_env(
         env["DEV_HELPERS_DB_PORT"] = str(endpoints.pg_port)
         env["DEV_HELPERS_DB_NAME"] = config.postgres.db
         env["DEV_HELPERS_DB_USER"] = config.postgres.user
+    elif config.sqlite.enabled and endpoints.sqlite_path is not None:
+        # SQLite has no host/port, but DEV_HELPERS_DB_NAME maps to the
+        # absolute path so consumers that build their own DATABASES dict
+        # from these still work.
+        env["DEV_HELPERS_DB_NAME"] = endpoints.sqlite_path
     if (
         config.redis.enabled
         and endpoints.redis_host is not None
@@ -141,6 +148,12 @@ def _project_values(config: RunSiteConfig, endpoints: ContainerEndpoints) -> dic
         out["db_name"] = pg.db
         out["db_user"] = pg.user
         out["db_password"] = pg.password
+    elif config.sqlite.enabled and endpoints.sqlite_path is not None:
+        # SQLite mode: only ``database_url`` and ``db_name`` make sense.
+        # PG-only keys (db_host/db_port/db_user/db_password) stay unset
+        # so they don't get mapped to nonsense values.
+        out["database_url"] = f"sqlite:///{endpoints.sqlite_path}"
+        out["db_name"] = endpoints.sqlite_path
     if (
         config.redis.enabled
         and endpoints.redis_host is not None

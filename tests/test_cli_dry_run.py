@@ -190,9 +190,7 @@ def test_celery_active_no_celery_flag_overrides_enabled(minimal_config) -> None:
     assert _celery_active(cfg, opts) is False
 
 
-def test_force_reset_threads_into_resolve_git_source(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_force_reset_threads_into_resolve_git_source(tmp_path: Path, monkeypatch, capsys) -> None:
     """End-to-end: invoking ``run-site run --from-git ... --force-reset``
     must call ``resolve_git_source(force_reset=True)``."""
 

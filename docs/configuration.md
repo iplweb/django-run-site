@@ -70,7 +70,7 @@ venv and lose `site-packages`.
 
 ```toml
 [postgres]
-enabled = true           # set to false to skip the Postgres container entirely
+enabled = true           # true | false | "auto" (see below)
 image = "postgres:16"
 user = "myproject"
 password = "password"
@@ -90,6 +90,12 @@ section from the runtime sidecar. Use this when your project is happy
 with SQLite or connects to an external database — your `settings.py`
 stays in charge of `DATABASES['default']`.
 
+`enabled = "auto"` opts into auto-detection: `run-site` statically scans
+your project's settings module on each run, sets `enabled = true` when it
+sees `django.db.backends.postgresql` (or `postgres://` / `postgresql://`
+URL strings), and `false` otherwise. Useful if you alternate between PG
+and SQLite from one config.
+
 `driver` controls the `postgres<driver>://` scheme of `DATABASE_URL`:
 
 | Value | Resulting URL |
@@ -105,7 +111,7 @@ that take tuning knobs via env (e.g. BPP's `iplweb/bpp_dbserver`).
 
 ```toml
 [redis]
-enabled = true            # set to false to skip the Redis container entirely
+enabled = true            # true | false | "auto"
 image = "redis:7-alpine"
 db = 0
 ```
@@ -114,8 +120,51 @@ db = 0
 Postgres: no container, no `DEV_HELPERS_REDIS_*` vars, no `redis_url` /
 `redis_host` / `redis_port` mapping, no `[redis]` block in the sidecar.
 
-If you disable both Postgres and Redis, `run-site` skips the Docker
-availability check too — useful for laptops where Docker isn't running.
+`enabled = "auto"` scans your settings for Redis usage — Redis cache
+backends (`django_redis`, `django.core.cache.backends.redis.RedisCache`),
+`redis://` / `rediss://` URLs, or a `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`
+reference all count as evidence.
+
+If neither Postgres nor Redis ends up enabled (and SQLite mode is on),
+`run-site` skips the Docker availability check too — useful for laptops
+where Docker isn't running.
+
+## `[sqlite]`
+
+Managed SQLite mode. When enabled, `run-site` picks a path, creates the
+file, and exposes it to your project via the standard `database_url`
+`[env]` mapping (as a `sqlite:///<abspath>` URL).
+
+```toml
+[sqlite]
+enabled = "auto"   # true | false | "auto" (default "auto")
+path = ""          # optional: explicit path for the persistent (--reuse) file
+```
+
+Lifecycle mirrors the Postgres container:
+
+| Mode | Path | Lifecycle |
+|---|---|---|
+| no `--reuse` | `<tempdir>/runsite-<slug>-…/db.sqlite3` | created fresh; **deleted on exit** |
+| `--reuse` | `<project_root>/.run-site/<slug>.sqlite3` (or `path` override) | created if missing; **never deleted** |
+
+Combine with `--force-reset` to wipe the persistent file before starting.
+
+`enabled = "auto"` (the default) only enables SQLite mode when settings
+explicitly reference SQLite (`django.db.backends.sqlite3` or
+`sqlite:///`) **and** Postgres did not also auto-enable from the same
+scan. Existing SQLite users whose `settings.py` hardcodes a path
+(`BASE_DIR / "db.sqlite3"`) and doesn't read `DATABASE_URL` are
+unaffected: the env var is ignored and the historic file keeps being
+used.
+
+Explicit `[postgres].enabled = true` together with `[sqlite].enabled =
+true` is a config error — pick one database backend per config.
+
+**`.gitignore` warning:** when run-site creates the persistent
+`.run-site/` directory it checks your `.gitignore`; if `.run-site/` (or
+`.run-site`) is not listed, you'll see a warning at startup. Add it so
+the local DB file doesn't end up in commits.
 
 ## `[containers]`
 

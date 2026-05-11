@@ -2,9 +2,19 @@
 #
 # Use this layout when your project's settings.py uses
 # django.db.backends.sqlite3 and you don't need a Redis cache. run-site
-# won't pull container images, won't connect to Docker, and will leave
-# DATABASES['default'] / CACHES['default'] entirely under your project's
-# control.
+# won't pull container images and won't connect to Docker.
+#
+# Two SQLite modes exist:
+#
+# * No --reuse: a random temp file under /tmp is created and removed at
+#   exit. Each run starts from a clean DB (migrate + create superuser).
+# * --reuse: <project_root>/.run-site/<project_slug>.sqlite3 is created
+#   once and persists across runs.
+#
+# For run-site to actually inject the SQLite path into your project, map
+# DATABASE_URL in [env] below — your settings.py reads it (via
+# dj-database-url or similar). If you'd rather your settings.py keep
+# managing the path itself, set [sqlite].enabled = false here.
 
 project_slug = "myproject"
 manage_py = "manage.py"
@@ -17,6 +27,18 @@ enabled = false
 
 [redis]
 enabled = false
+
+[sqlite]
+enabled = true
+# Optional explicit path for the --reuse case. When empty/absent,
+# run-site uses <project_root>/.run-site/<slug>.sqlite3 — add
+# `.run-site/` to your .gitignore.
+# path = "data/db.sqlite3"
+
+[env]
+# Hand the SQLite URL to your project's settings.py:
+#   DATABASES = {"default": dj_database_url.config()}
+database_url = "DATABASE_URL"
 
 [django]
 runserver_bind = "127.0.0.1"
