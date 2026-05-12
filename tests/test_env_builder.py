@@ -213,6 +213,53 @@ def test_project_env_mapping_skips_disabled_postgres(tmp_path: Path) -> None:
     assert "DATABASE_URL" not in env
 
 
+# ---------------------------------------------------------------------------
+# DJANGO_SETTINGS_MODULE injection — covers the celery-needs-settings case
+# ---------------------------------------------------------------------------
+
+
+def test_django_settings_module_injected_when_provided(minimal_config) -> None:
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=False,
+        django_settings_module="myproject.settings",
+        base_env={},
+    )
+    assert env["DJANGO_SETTINGS_MODULE"] == "myproject.settings"
+
+
+def test_django_settings_module_does_not_override_existing(minimal_config) -> None:
+    """If the user has DJANGO_SETTINGS_MODULE already exported in the
+    shell (or otherwise present in base_env), our discovered value must
+    not clobber it."""
+
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=False,
+        django_settings_module="discovered.settings",
+        base_env={"DJANGO_SETTINGS_MODULE": "user.settings"},
+    )
+    assert env["DJANGO_SETTINGS_MODULE"] == "user.settings"
+
+
+def test_django_settings_module_absent_when_not_provided(minimal_config) -> None:
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=False,
+        base_env={},
+    )
+    assert "DJANGO_SETTINGS_MODULE" not in env
+
+
 def test_redis_vars_omitted_when_redis_disabled(tmp_path: Path) -> None:
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text(

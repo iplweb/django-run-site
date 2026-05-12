@@ -33,6 +33,7 @@ from run_site.discovery import (
     discover_local_python,
     discover_manage_py,
     discover_project_root,
+    discover_settings_module,
 )
 from run_site.dumps import execute_post_start, plan_dump
 from run_site.env import (
@@ -527,12 +528,17 @@ def _execute_run(
             redis_port=containers.redis_port,
             sqlite_path=str(sqlite_state.path) if sqlite_state else None,
         )
+        # Discover DJANGO_SETTINGS_MODULE from manage.py so subprocesses
+        # that don't go through manage.py — notably `python -m celery` —
+        # still find Django settings.
+        django_settings_module = discover_settings_module(manage_py=manage_py)
         env_for_subprocess = build_subprocess_env(
             config=config,
             endpoints=endpoints,
             autologin_token=autologin_token,
             runserver_port=runserver_port,
             is_runserver=False,
+            django_settings_module=django_settings_module,
         )
         env_for_runserver = build_subprocess_env(
             config=config,
@@ -540,6 +546,7 @@ def _execute_run(
             autologin_token=autologin_token,
             runserver_port=runserver_port,
             is_runserver=True,
+            django_settings_module=django_settings_module,
         )
 
         if opts.print_env:

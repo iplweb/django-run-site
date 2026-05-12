@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-12
+
+### Fixed
+
+- **Celery worker no longer fails with `ImproperlyConfigured: Requested
+  settings, but settings are not configured.`** Run-site now injects
+  `DJANGO_SETTINGS_MODULE` into every subprocess environment, discovered
+  from the project's `manage.py` via `discover_settings_module()`.
+  Previously, `manage.py`-driven subprocesses (migrate, runserver) worked
+  because `manage.py` does `os.environ.setdefault("DJANGO_SETTINGS_MODULE",
+  ...)` itself, but `python -m celery -A <app> worker` skips `manage.py`
+  entirely — so any celery app that does `app.config_from_object(
+  "django.conf:settings")` without its own `setdefault` would crash at
+  startup. The new behavior uses `setdefault` semantics, so a user-exported
+  `DJANGO_SETTINGS_MODULE` still wins.
+
 ## [0.7.0] — 2026-05-12
 
 ### Changed

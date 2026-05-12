@@ -61,6 +61,7 @@ def build_subprocess_env(
     autologin_token: str,
     runserver_port: int | None,
     is_runserver: bool,
+    django_settings_module: str | None = None,
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the env dict passed to a subprocess (migrate, runserver, etc).
@@ -71,12 +72,21 @@ def build_subprocess_env(
 
     ``is_runserver=True`` adds ``DJANGO_DEV_HELPERS_ENABLED=1`` (the hard
     activation flag — only the runserver subprocess runs the helper app).
+
+    When *django_settings_module* is provided, it is set as
+    ``DJANGO_SETTINGS_MODULE`` via ``setdefault`` — so we don't clobber a
+    value the user already exported in their shell, but we do supply one
+    for subprocesses (notably ``python -m celery``) that don't go through
+    ``manage.py`` and therefore never get its ``setdefault`` treatment.
     """
 
     env: dict[str, str] = dict(base_env if base_env is not None else os.environ)
 
     # Common safety: unbuffered Python so the multiplexer sees output live.
     env.setdefault("PYTHONUNBUFFERED", "1")
+
+    if django_settings_module is not None:
+        env.setdefault("DJANGO_SETTINGS_MODULE", django_settings_module)
 
     # Project-side mapping ([env]).
     project_values = _project_values(config, endpoints)
