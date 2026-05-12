@@ -34,6 +34,7 @@ from run_site.discovery import (
     discover_manage_py,
     discover_project_root,
     discover_settings_module,
+    is_django_manage_py,
 )
 from run_site.dumps import execute_post_start, plan_dump
 from run_site.env import (
@@ -103,6 +104,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_top_help()
         return 0
 
+    # Short form: ``run-site path/to/manage.py [extra args]``.
+    # Trigger on anything that looks file-like — has a path separator or
+    # ends with ``.py`` — so plain typos ("ruh") still get the clearer
+    # "Unknown command" error below.
+    candidate = raw_argv[0]
+    looks_file_like = "/" in candidate or "\\" in candidate or candidate.endswith(".py")
+    if looks_file_like:
+        ok, reason = is_django_manage_py(Path(candidate))
+        if ok:
+            return _run_command(["--manage-py", candidate, *raw_argv[1:]])
+        sys.stderr.write(
+            f"error: {candidate!r} is not a usable Django manage.py: {reason}\n"
+            "Use 'run-site run --manage-py <path>' explicitly if you want to "
+            "skip this check.\n"
+        )
+        return 64
+
     sys.stderr.write(f"Unknown command: {raw_argv[0]!r}. Try 'run-site --help'.\n")
     return 64
 
@@ -113,10 +131,12 @@ def _print_top_help() -> None:
         "(package: run-site).\n"
         "\n"
         "Usage:\n"
-        "  run-site init [options]     Generate a default runsite.toml\n"
-        "  run-site run [options]      Spin up dev stack\n"
-        "  run-site doctor [options]   Sanity-check config + tooling\n"
-        "  run-site --version          Print version and exit\n"
+        "  run-site init [options]         Generate a default runsite.toml\n"
+        "  run-site run [options]          Spin up dev stack\n"
+        "  run-site <path/to/manage.py>    Short form: equivalent to\n"
+        "                                  'run --manage-py <path>'\n"
+        "  run-site doctor [options]       Sanity-check config + tooling\n"
+        "  run-site --version              Print version and exit\n"
         "\n"
         f"Version: {__version__}\n"
         "Run 'run-site <command> --help' for the full options list.\n"

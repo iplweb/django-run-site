@@ -186,6 +186,56 @@ def imports_django(path: Path) -> bool:
     return False
 
 
+def is_django_manage_py(path: Path) -> tuple[bool, str | None]:
+    """Strict validation for the ``run-site <path>`` short form.
+
+    Returns ``(True, None)`` when *path* is a real Django ``manage.py``:
+    existing file, parses as Python, imports
+    ``execute_from_command_line`` from ``django.core.management``, and
+    references ``DJANGO_SETTINGS_MODULE`` somewhere in the source.
+
+    Otherwise returns ``(False, reason)`` with a short human-readable
+    reason — used to produce specific errors when the user clearly meant
+    a path but it didn't validate.
+    """
+
+    if not path.is_file():
+        return False, f"path does not exist or is not a regular file: {path}"
+
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"could not read file: {exc}"
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return False, f"not valid Python ({exc.msg})"
+
+    has_exec_import = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "django.core.management" or mod.startswith("django.core.management."):
+                for alias in node.names:
+                    if alias.name == "execute_from_command_line":
+                        has_exec_import = True
+                        break
+        if has_exec_import:
+            break
+
+    if not has_exec_import:
+        return False, (
+            "missing 'from django.core.management import execute_from_command_line' — "
+            "doesn't look like a Django manage.py"
+        )
+
+    if "DJANGO_SETTINGS_MODULE" not in source:
+        return False, "no DJANGO_SETTINGS_MODULE setting found in the file"
+
+    return True, None
+
+
 def _abs_no_symlinks(path: Path) -> Path:
     """Return *path* as an absolute, normalized path **without resolving
     symlinks**.

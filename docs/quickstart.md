@@ -110,6 +110,19 @@ map those names instead — see [configuration](configuration.md#env).
 run-site run
 ```
 
+**Short form** — if you don't have a `runsite.toml` yet (or just want a
+one-liner), point `run-site` directly at your `manage.py`:
+
+```bash
+run-site src/manage.py
+# equivalent to: run-site run --manage-py src/manage.py
+```
+
+The short form is only accepted when the file exists, parses as Python,
+imports `execute_from_command_line` from `django.core.management`, and
+references `DJANGO_SETTINGS_MODULE` — i.e. it really is a Django
+`manage.py`. Extra flags pass through (`run-site src/manage.py --port 9000`).
+
 That will:
 
 1. Spin up Postgres + Redis in containers on **free ports** (so multiple
