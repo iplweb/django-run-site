@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from run_site import __version__
 from run_site.cli import _build_web_argv, main
 from run_site.config import RunSiteConfig
 
@@ -20,7 +21,7 @@ def run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, s
 def test_version_prints_and_exits(capsys) -> None:
     code, out, _ = run_cli(["--version"], capsys)
     assert code == 0
-    assert "0.5.0" in out
+    assert __version__ in out
 
 
 def test_top_level_help(capsys) -> None:

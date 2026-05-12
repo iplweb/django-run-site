@@ -99,15 +99,15 @@ def test_invalid_postgres_driver_rejected(tmp_path: Path) -> None:
         load_config(config_path=cfg, project_root=tmp_path)
 
 
-def test_postgres_defaults_to_enabled(tmp_path: Path) -> None:
-    """Backward compat: existing configs without ``enabled`` keep starting
-    Postgres."""
+def test_postgres_defaults_to_auto(tmp_path: Path) -> None:
+    """Postgres / Redis default to ``"auto"`` — settings.py is what decides
+    whether they boot, not an unconditional default."""
 
     cfg = tmp_path / "runsite.toml"
     cfg.write_text('project_slug = "x"\n[postgres]\n[redis]\n')
     config = load_config(config_path=cfg, project_root=tmp_path)
-    assert config.postgres.enabled is True
-    assert config.redis.enabled is True
+    assert config.postgres.enabled == "auto"
+    assert config.redis.enabled == "auto"
 
 
 def test_postgres_can_be_disabled(tmp_path: Path) -> None:
@@ -133,8 +133,8 @@ def test_load_config_works_without_any_file(tmp_path: Path) -> None:
     config = load_config(config_path=None, project_root=tmp_path)
     # tmp_path.name is something like "test_load_config_works_without_any_file0"
     assert config.project_slug != ""
-    assert config.postgres.enabled is True
-    assert config.redis.enabled is True
+    assert config.postgres.enabled == "auto"
+    assert config.redis.enabled == "auto"
     assert config.django.runserver_bind == "127.0.0.1"
 
 

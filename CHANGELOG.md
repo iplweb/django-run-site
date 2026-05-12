@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-12
+
+### Changed
+
+- **`[postgres].enabled` and `[redis].enabled` now default to `"auto"`**
+  (matching `[sqlite].enabled`). On every run, run-site scans the
+  project's settings module and only starts the Postgres / Redis
+  container when settings actually reference that backend
+  (`django.db.backends.postgresql`, `postgres://`, `django_redis`,
+  `redis://`, `CELERY_BROKER_URL`, …). Projects that don't use one of
+  these services now boot without the corresponding container — and
+  with neither Postgres nor Redis enabled, the Docker availability
+  check is skipped entirely.
+
+  **Breaking:** if your `settings.py` doesn't statically reference a
+  service that you still want booted (e.g. for a fixture import step
+  before settings change), set `enabled = true` explicitly in
+  `runsite.toml`.
+
+### Fixed
+
+- `--version` test no longer asserts a hardcoded version string; reads
+  the package's `__version__` so it tracks releases automatically.
+
 ## [0.6.0] — 2026-05-11
 
 ### Added

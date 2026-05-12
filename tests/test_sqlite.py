@@ -41,15 +41,16 @@ def test_sqlite_section_defaults_to_auto(tmp_path: Path) -> None:
     assert cfg.sqlite.path is None
 
 
-def test_postgres_and_redis_default_to_true(tmp_path: Path) -> None:
-    """Backward-compat: existing configs without [postgres].enabled keep
-    the historic ``True`` default. Tri-state is opt-in via ``"auto"``."""
+def test_postgres_and_redis_default_to_auto(tmp_path: Path) -> None:
+    """All three service ``enabled`` fields default to ``"auto"`` — the
+    decision to boot is driven by settings.py detection, not by an
+    unconditional default."""
 
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text('project_slug = "demo"\n')
     cfg = load_config(config_path=cfg_path, project_root=tmp_path)
-    assert cfg.postgres.enabled is True
-    assert cfg.redis.enabled is True
+    assert cfg.postgres.enabled == "auto"
+    assert cfg.redis.enabled == "auto"
 
 
 def test_enabled_accepts_auto(tmp_path: Path) -> None:

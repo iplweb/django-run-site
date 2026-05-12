@@ -57,7 +57,7 @@ class PythonConfig:
 
 @dataclass(frozen=True)
 class PostgresConfig:
-    enabled: EnabledTri = True
+    enabled: EnabledTri = "auto"
     image: str = "postgres:16"
     user: str = "django"
     password: str = "password"
@@ -69,7 +69,7 @@ class PostgresConfig:
 
 @dataclass(frozen=True)
 class RedisConfig:
-    enabled: EnabledTri = True
+    enabled: EnabledTri = "auto"
     image: str = "redis:7-alpine"
     db: int = 0
 
@@ -465,7 +465,7 @@ def _build_postgres(raw: Mapping[str, Any]) -> PostgresConfig:
             raise ConfigError("[postgres.env] keys and values must be strings")
         env[key] = value
     return PostgresConfig(
-        enabled=_enabled_tri(raw, "[postgres].enabled", default=True),
+        enabled=_enabled_tri(raw, "[postgres].enabled", default="auto"),
         image=_str(raw, "image", default="postgres:16"),
         user=_str(raw, "user", default="django"),
         password=_str(raw, "password", default="password"),
@@ -481,7 +481,7 @@ def _build_redis(raw: Mapping[str, Any]) -> RedisConfig:
     if not isinstance(db, int) or db < 0:
         raise ConfigError("[redis].db must be a non-negative int")
     return RedisConfig(
-        enabled=_enabled_tri(raw, "[redis].enabled", default=True),
+        enabled=_enabled_tri(raw, "[redis].enabled", default="auto"),
         image=_str(raw, "image", default="redis:7-alpine"),
         db=db,
     )

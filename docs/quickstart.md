@@ -27,9 +27,10 @@ You'll also need:
 
 - **Docker** running locally (Docker Desktop, colima, podman with the docker
   socket exposed). The CLI talks to the daemon via the standard
-  `DOCKER_HOST` env var. *Skip this if you're running SQLite-only with
-  `[postgres].enabled = false` and `[redis].enabled = false` — see the
-  [SQLite example](../examples/runsite.sqlite.toml).*
+  `DOCKER_HOST` env var. *Skip this if your project doesn't use Postgres
+  or Redis — the default `enabled = "auto"` will detect that from your
+  settings and won't try to start either container. See the [SQLite
+  example](../examples/runsite.sqlite.toml).*
 - **Python 3.11+** (the CLI itself; your project can use any Python the
   orchestrator can find — see [configuration](configuration.md#python)).
 

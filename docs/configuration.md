@@ -70,7 +70,7 @@ venv and lose `site-packages`.
 
 ```toml
 [postgres]
-enabled = true           # true | false | "auto" (see below)
+enabled = "auto"         # true | false | "auto" (default "auto", see below)
 image = "postgres:16"
 user = "myproject"
 password = "password"
@@ -90,11 +90,12 @@ section from the runtime sidecar. Use this when your project is happy
 with SQLite or connects to an external database — your `settings.py`
 stays in charge of `DATABASES['default']`.
 
-`enabled = "auto"` opts into auto-detection: `run-site` statically scans
-your project's settings module on each run, sets `enabled = true` when it
+`enabled = "auto"` is the default: `run-site` statically scans your
+project's settings module on each run, resolves `enabled = true` when it
 sees `django.db.backends.postgresql` (or `postgres://` / `postgresql://`
-URL strings), and `false` otherwise. Useful if you alternate between PG
-and SQLite from one config.
+URL strings), and `false` otherwise. Set `enabled = true` explicitly if
+you want Postgres started unconditionally (e.g. for a fixture import that
+doesn't yet appear in settings).
 
 `driver` controls the `postgres<driver>://` scheme of `DATABASE_URL`:
 
@@ -111,7 +112,7 @@ that take tuning knobs via env (e.g. BPP's `iplweb/bpp_dbserver`).
 
 ```toml
 [redis]
-enabled = true            # true | false | "auto"
+enabled = "auto"          # true | false | "auto" (default "auto")
 image = "redis:7-alpine"
 db = 0
 ```
@@ -120,10 +121,11 @@ db = 0
 Postgres: no container, no `DEV_HELPERS_REDIS_*` vars, no `redis_url` /
 `redis_host` / `redis_port` mapping, no `[redis]` block in the sidecar.
 
-`enabled = "auto"` scans your settings for Redis usage — Redis cache
-backends (`django_redis`, `django.core.cache.backends.redis.RedisCache`),
-`redis://` / `rediss://` URLs, or a `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`
-reference all count as evidence.
+`enabled = "auto"` (the default) scans your settings for Redis usage —
+Redis cache backends (`django_redis`,
+`django.core.cache.backends.redis.RedisCache`), `redis://` / `rediss://`
+URLs, or a `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` reference all
+count as evidence.
 
 If neither Postgres nor Redis ends up enabled (and SQLite mode is on),
 `run-site` skips the Docker availability check too — useful for laptops
