@@ -322,6 +322,59 @@ run-site run --dump-strategy=post-start   # force post-start, even on a reused c
 
 The full reference lives in [docs/configuration.md#dump](docs/configuration.md#dump).
 
+### Exposing the dev server on your LAN
+
+By default `runserver` binds to `127.0.0.1` — only the host machine can
+reach it. To open the dev server to phones / tablets / other laptops on
+the same network:
+
+```bash
+run-site run --bind 0.0.0.0
+```
+
+Two things then happen automatically:
+
+1. **The banner lists every reachable URL.** `run-site` discovers your
+   machine's mDNS hostname and primary LAN IP and prints a clickable
+   `http://<host>:<port>/` for each one alongside the loopback URL —
+   no need to look up your IP with `ifconfig`.
+2. **`ALLOWED_HOSTS` is wired up for you.** Without this, Django would
+   reject every non-loopback request with `DisallowedHost`. `run-site`
+   exports the discovered hosts under two env-var names:
+   - `DEV_HELPERS_ALLOWED_HOSTS` — consumed by `django-dev-helpers`
+     (>= 0.1.11), which unions the entries into `settings.ALLOWED_HOSTS`
+     at app ready. Works with **any** project that has the helper in
+     `INSTALLED_APPS`, even if its settings hard-code `ALLOWED_HOSTS`.
+   - `DJANGO_ALLOWED_HOSTS` — the conventional name picked up by
+     projects that read it themselves (e.g.
+     `ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[...])`).
+
+   The list always contains `localhost`, `127.0.0.1`, `[::1]` plus the
+   discovered LAN entries — never `*`. For a loopback-only bind both
+   exports are skipped (your project's own `ALLOWED_HOSTS` already
+   covers that case).
+
+   Rename the conventional export per project with `[env].allowed_hosts`,
+   or set it to `null` to suppress entirely (the `DEV_HELPERS_*`
+   contract still fires for the helper):
+
+   ```toml
+   [env]
+   allowed_hosts = "MY_HOSTS"   # rename
+   # or
+   allowed_hosts = null         # only export DEV_HELPERS_ALLOWED_HOSTS
+   ```
+
+Want this on by default for every project? Drop one line in your shell
+profile:
+
+```bash
+export RUN_SITE_BIND=0.0.0.0
+```
+
+Now `run-site manage.py` (no flag) exposes to the LAN. An explicit
+`--bind` on the command line still wins.
+
 ### Lifecycle hooks — pre/post each stage
 
 Hooks let you wedge custom logic into the orchestrator's flow. Two
@@ -471,6 +524,28 @@ to break a clean shutdown.
 
 Full reference + the `ctx` dict schema: [docs/hooks.md](docs/hooks.md).
 A real-world hook setup: [examples/runsite.bpp.toml](examples/runsite.bpp.toml).
+
+## Environment variables
+
+A small set of `RUN_SITE_*` env vars provide shell-profile defaults so
+you don't have to remember CLI flags or edit `runsite.toml` for
+preferences that follow you across projects.
+
+| Variable | Effect |
+|---|---|
+| `RUN_SITE_BIND` | Default for `--bind`. Set to `0.0.0.0` to expose the dev server to the LAN by default. CLI `--bind` overrides. |
+| `RUN_SITE_PYTHON` | Path to a Python interpreter used to execute `manage.py`. Highest-priority entry in the auto-discovery chain (see [`discovery.py`](src/run_site/discovery.py) for the full ordering). |
+
+`run-site` itself also *exports* a number of variables to subprocesses:
+
+- The `DEV_HELPERS_*` contract (DB host/port, Redis host/port, autologin
+  token, project root, port, `ALLOWED_HOSTS`) — consumed by
+  `django-dev-helpers`. Stable, never renameable.
+- Conventional names like `DATABASE_URL`, `REDIS_URL`,
+  `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS` — defaults set so
+  `env.db_url(...)`-style settings work with zero config. Rename or
+  suppress per project via `[env]` mapping. See
+  [docs/configuration.md](docs/configuration.md) for the full table.
 
 ## What's in the box
 
