@@ -28,6 +28,7 @@ from run_site.containers import (
     start_containers,
     stop_containers,
 )
+from run_site.display_detect import HeadlessSignal, detect_headless_session
 from run_site.discovery import (
     detect_services_from_settings,
     discover_local_python,
@@ -45,6 +46,7 @@ from run_site.env import (
 )
 from run_site.errors import RunSiteError
 from run_site.hooks import build_hook_context, run_hooks
+from run_site.host_discovery import discover_lan_hosts
 from run_site.log_multiplexer import LogMultiplexer
 from run_site.processes import (
     ProcessGroup,
@@ -287,7 +289,11 @@ def _build_full_parser(
     dj = parser.add_argument_group("Django")
     dj.add_argument("--port", type=int, default=None)
     dj.add_argument("--bind", default=None, metavar="HOST")
-    dj.add_argument("--no-browser", action="store_true")
+    # --browser / --no-browser share dest so the last flag wins and the
+    # default (None) means "fall through to [django].open_browser".
+    browser_group = dj.add_mutually_exclusive_group()
+    browser_group.add_argument("--browser", dest="browser", action="store_true", default=None)
+    browser_group.add_argument("--no-browser", dest="browser", action="store_false")
     dj.add_argument("--no-migrate", action="store_true")
     dj.add_argument("--no-superuser", action="store_true")
 
@@ -756,6 +762,27 @@ def _execute_run(
         )
 
         # Banner.
+        # Binding to all interfaces means other LAN devices can reach this
+        # server too — surface those URLs so the user doesn't have to guess
+        # their LAN IP. For any other bind value the primary URL is already
+        # the right one to advertise.
+        if config.django.runserver_bind == "0.0.0.0":
+            extra_hosts = tuple(
+                host
+                for host in discover_lan_hosts()
+                if host != config.django.runserver_display_host
+            )
+            extra_app_urls = tuple(f"http://{host}:{runserver_port}/" for host in extra_hosts)
+        else:
+            extra_app_urls = ()
+        homepage_url = f"http://{config.django.runserver_display_host}:{runserver_port}/"
+        headless_signal = detect_headless_session()
+        should_open_browser, browser_status = _resolve_browser_decision(
+            config=config,
+            cli_choice=getattr(opts, "browser", None),
+            signal=headless_signal,
+            homepage=homepage_url,
+        )
         banner = render_banner(
             config=config,
             info=BannerInfo(
@@ -781,6 +808,8 @@ def _execute_run(
                 superuser=superuser_payload,
                 sqlite_path=sqlite_state.path if sqlite_state else None,
                 sqlite_ephemeral=bool(sqlite_state and sqlite_state.ephemeral),
+                extra_app_urls=extra_app_urls,
+                browser_status=browser_status,
             ),
         )
         sys.stdout.write(banner)
@@ -881,17 +910,20 @@ def _execute_run(
                     color="yellow",
                 )
 
-        # Probe.
-        probe_url = (
-            f"http://{config.django.runserver_display_host}:{runserver_port}"
-            f"{config.django.browser_probe_path}"
-        )
-        probe_thread = threading.Thread(
-            target=_probe_and_open_browser,
-            args=(probe_url, runserver_port, config, opts.no_browser),
-            daemon=True,
-        )
-        probe_thread.start()
+        # Probe + browser open. The probe exists only to gate the browser
+        # open on a 2xx — when we've already decided not to open, there's
+        # nothing left to wait for.
+        if should_open_browser:
+            probe_url = (
+                f"http://{config.django.runserver_display_host}:{runserver_port}"
+                f"{config.django.browser_probe_path}"
+            )
+            probe_thread = threading.Thread(
+                target=_probe_and_open_browser,
+                args=(probe_url, homepage_url, config),
+                daemon=True,
+            )
+            probe_thread.start()
 
         signal.signal(signal.SIGINT, lambda *_: _trigger_shutdown(proc_group))
         signal.signal(signal.SIGTERM, lambda *_: _trigger_shutdown(proc_group))
@@ -961,12 +993,39 @@ def _shutdown(
     return 0
 
 
-def _probe_and_open_browser(url: str, port: int, config: RunSiteConfig, no_browser: bool) -> None:
+def _resolve_browser_decision(
+    *,
+    config: RunSiteConfig,
+    cli_choice: bool | None,
+    signal: HeadlessSignal,
+    homepage: str,
+) -> tuple[bool, str]:
+    """Return ``(should_open, banner_status)``.
+
+    Precedence: explicit CLI flag > config setting > headless auto-detect.
+    The banner status string always explains what was decided and why,
+    so users never wonder "did it skip on purpose or fail silently?".
+    """
+
+    if cli_choice is True:
+        return True, f"will open {homepage} (forced by --browser)"
+    if cli_choice is False:
+        return False, "disabled by --no-browser"
+
+    setting = config.django.open_browser
+    if setting is True:
+        return True, f"will open {homepage} ([django].open_browser = true)"
+    if setting is False:
+        return False, "disabled by [django].open_browser = false"
+
+    if signal.headless:
+        return False, f"skipped — {signal.reason} (pass --browser to override)"
+    return True, f"will open {homepage} ({signal.reason})"
+
+
+def _probe_and_open_browser(url: str, homepage: str, config: RunSiteConfig) -> None:
     if not wait_for_http(url, timeout=config.django.probe_timeout):
         return
-    if no_browser:
-        return
-    homepage = f"http://{config.django.runserver_display_host}:{port}/"
     try:
         import webbrowser
 

@@ -108,6 +108,55 @@ def test_banner_omits_sidecar_line_without_path(config: RunSiteConfig) -> None:
     assert "Sidecar:" not in out
 
 
+def test_banner_renders_extra_app_urls_when_present(config: RunSiteConfig) -> None:
+    """``--bind 0.0.0.0`` populates extras — the banner should list them
+    after the primary App/Admin URLs."""
+
+    out = _strip_ansi(
+        render_banner(
+            config=config,
+            info=_make_info(
+                extra_app_urls=(
+                    "http://mac-mini-micha.local:8123/",
+                    "http://192.168.1.42:8123/",
+                )
+            ),
+        )
+    )
+    assert "also reachable at:" in out
+    assert "http://mac-mini-micha.local:8123/" in out
+    assert "http://192.168.1.42:8123/" in out
+
+
+def test_banner_omits_extra_app_urls_line_when_empty(config: RunSiteConfig) -> None:
+    out = _strip_ansi(render_banner(config=config, info=_make_info()))
+    assert "also reachable at:" not in out
+
+
+def test_banner_renders_browser_status_when_set(config: RunSiteConfig) -> None:
+    """Headless auto-skip should be visible in the banner — the user
+    needs to know *why* no browser opened."""
+
+    out = _strip_ansi(
+        render_banner(
+            config=config,
+            info=_make_info(
+                browser_status=(
+                    "skipped — SSH session ($SSH_CONNECTION set) (pass --browser to override)"
+                )
+            ),
+        )
+    )
+    assert "Browser:" in out
+    assert "SSH session" in out
+    assert "--browser to override" in out
+
+
+def test_banner_omits_browser_row_when_status_empty(config: RunSiteConfig) -> None:
+    out = _strip_ansi(render_banner(config=config, info=_make_info()))
+    assert "Browser:" not in out
+
+
 def test_banner_lifecycle_says_removed_without_reuse(config: RunSiteConfig) -> None:
     out = _strip_ansi(render_banner(config=config, info=_make_info(reuse=False)))
     assert "Lifecycle:" in out

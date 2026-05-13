@@ -40,6 +40,14 @@ class BannerInfo:
     # Managed SQLite info — ``None`` when SQLite mode is off.
     sqlite_path: Path | None = None
     sqlite_ephemeral: bool = False
+    # Extra reachable App URLs to advertise beyond ``appserver_url``.
+    # Populated when binding to all interfaces (``--bind 0.0.0.0``) so the
+    # user sees which LAN hostnames/IPs other devices can use.
+    extra_app_urls: tuple[str, ...] = ()
+    # Resolved browser-open decision, e.g. ``"will open"`` or
+    # ``"skipped — SSH session ($SSH_CONNECTION set) (--browser to override)"``.
+    # Always shown so the auto-detection is transparent. Empty string omits.
+    browser_status: str = ""
 
 
 def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
@@ -74,6 +82,11 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
     lines.append("")
     lines.append(f"  {bold}{green}App:{reset}     {info.appserver_url}")
     lines.append(f"  {bold}{green}Admin:{reset}   {info.admin_url}")
+    if info.extra_app_urls:
+        joined = "  ".join(info.extra_app_urls)
+        lines.append(f"           {gray}(also reachable at: {joined}){reset}")
+    if info.browser_status:
+        lines.append(f"  {bold}Browser:{reset}  {info.browser_status}")
     lines.extend(_render_superuser(info=info, config=config, bold=bold, gray=gray, reset=reset))
     if info.pg_host is not None and info.pg_port is not None:
         lines.append(f"  {bold}{yellow}Postgres:{reset} {info.pg_host}:{info.pg_port}")

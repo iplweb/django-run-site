@@ -55,6 +55,28 @@ def test_django_web_command_must_not_be_empty(tmp_path: Path) -> None:
         load_config(config_path=cfg, project_root=tmp_path)
 
 
+def test_django_open_browser_defaults_to_auto(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.django.open_browser == "auto"
+
+
+def test_django_open_browser_accepts_bools_and_auto(tmp_path: Path) -> None:
+    for raw, expected in (("true", True), ("false", False), ('"auto"', "auto")):
+        cfg = tmp_path / "runsite.toml"
+        cfg.write_text(f'project_slug = "x"\n[django]\nopen_browser = {raw}\n')
+        config = load_config(config_path=cfg, project_root=tmp_path)
+        assert config.django.open_browser == expected, raw
+
+
+def test_django_open_browser_rejects_other_strings(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[django]\nopen_browser = "yes"\n')
+    with pytest.raises(ConfigError, match='true, false, or "auto"'):
+        load_config(config_path=cfg, project_root=tmp_path)
+
+
 def test_loads_pyproject_section(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(

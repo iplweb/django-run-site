@@ -378,6 +378,7 @@ def _render_toml(detected: DetectedDefaults, *, with_celery: bool) -> str:
     lines.append('runserver_display_host = "localhost"')
     lines.append('browser_probe_path = "/admin/login/"')
     lines.append("migrate = true")
+    lines.append('open_browser = "auto"')
     lines.append("")
     lines.append("[superuser]")
     lines.append("enabled = true")

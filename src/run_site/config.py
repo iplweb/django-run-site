@@ -121,6 +121,11 @@ class DjangoConfig:
     browser_probe_path: str = "/admin/login/"
     migrate: bool = True
     probe_timeout: float = 60.0
+    # Whether to auto-open a browser tab once the server is up.
+    # ``"auto"`` (the default) skips the open when the session looks
+    # headless — SSH on macOS, missing $DISPLAY/$WAYLAND_DISPLAY on
+    # Linux. Booleans force the decision regardless of detection.
+    open_browser: Literal["auto"] | bool = "auto"
     # Override the web process. When None, the orchestrator runs
     # ``<python> manage.py runserver <bind>:<port>``. When set, the
     # tokens go through the same template-substitution as
@@ -563,6 +568,14 @@ def _build_django(raw: Mapping[str, Any]) -> DjangoConfig:
         if not web_command_raw:
             raise ConfigError("[django].web_command must not be empty")
         web_command = tuple(web_command_raw)
+    open_browser_raw = raw.get("open_browser", "auto")
+    open_browser: Literal["auto"] | bool
+    if isinstance(open_browser_raw, bool):
+        open_browser = open_browser_raw
+    elif open_browser_raw == "auto":
+        open_browser = "auto"
+    else:
+        raise ConfigError('[django].open_browser must be true, false, or "auto"')
     return DjangoConfig(
         runserver_bind=_str(raw, "runserver_bind", default="127.0.0.1"),
         runserver_display_host=_str(raw, "runserver_display_host", default="localhost"),
@@ -570,6 +583,7 @@ def _build_django(raw: Mapping[str, Any]) -> DjangoConfig:
         migrate=_bool(raw, "migrate", default=True),
         probe_timeout=float(timeout),
         web_command=web_command,
+        open_browser=open_browser,
     )
 
 
