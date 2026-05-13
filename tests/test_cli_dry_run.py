@@ -167,6 +167,50 @@ def test_apply_cli_overrides_bind_zero_falls_back_to_localhost(
     assert out.django.runserver_display_host == "localhost"
 
 
+def test_apply_cli_overrides_bind_from_env_var(
+    minimal_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``RUN_SITE_BIND=0.0.0.0`` should drive the bind when no CLI flag
+    is given — convenience for "always expose to LAN"."""
+
+    import argparse
+
+    from run_site.cli import _apply_cli_overrides
+
+    monkeypatch.setenv("RUN_SITE_BIND", "0.0.0.0")
+    opts = argparse.Namespace(
+        postgres_image=None,
+        redis_image=None,
+        bind=None,
+        restore_jobs=None,
+        no_install=False,
+    )
+    out = _apply_cli_overrides(minimal_config, opts)
+    assert out.django.runserver_bind == "0.0.0.0"
+    assert out.django.runserver_display_host == "localhost"
+
+
+def test_apply_cli_overrides_cli_bind_wins_over_env(
+    minimal_config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit ``--bind`` must override ``RUN_SITE_BIND`` env."""
+
+    import argparse
+
+    from run_site.cli import _apply_cli_overrides
+
+    monkeypatch.setenv("RUN_SITE_BIND", "0.0.0.0")
+    opts = argparse.Namespace(
+        postgres_image=None,
+        redis_image=None,
+        bind="192.168.1.42",
+        restore_jobs=None,
+        no_install=False,
+    )
+    out = _apply_cli_overrides(minimal_config, opts)
+    assert out.django.runserver_bind == "192.168.1.42"
+
+
 def test_apply_cli_overrides_source_no_install_folds_into_opts(
     minimal_config,
 ) -> None:

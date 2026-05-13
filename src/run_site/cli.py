@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import signal
 import subprocess
@@ -290,7 +291,15 @@ def _build_full_parser(
 
     dj = parser.add_argument_group("Django")
     dj.add_argument("--port", type=int, default=None)
-    dj.add_argument("--bind", default=None, metavar="HOST")
+    dj.add_argument(
+        "--bind",
+        default=None,
+        metavar="HOST",
+        help=(
+            "Address to bind runserver to. Falls back to RUN_SITE_BIND env "
+            "var, then [django].runserver_bind in config (default 127.0.0.1)."
+        ),
+    )
     # --browser / --no-browser share dest so the last flag wins and the
     # default (None) means "fall through to [django].open_browser".
     browser_group = dj.add_mutually_exclusive_group()
@@ -568,6 +577,10 @@ def _execute_run(
         # that don't go through manage.py — notably `python -m celery` —
         # still find Django settings.
         django_settings_module = discover_settings_module(manage_py=manage_py)
+        # LAN hosts only matter when bind != loopback; cheap to discover
+        # always so the env builder gets a stable input. ``compute_allowed_hosts``
+        # short-circuits to ``()`` for loopback binds.
+        lan_hosts = discover_lan_hosts()
         env_for_subprocess = build_subprocess_env(
             config=config,
             endpoints=endpoints,
@@ -576,6 +589,7 @@ def _execute_run(
             is_runserver=False,
             django_settings_module=django_settings_module,
             secret_key=secret_key,
+            lan_hosts=lan_hosts,
         )
         env_for_runserver = build_subprocess_env(
             config=config,
@@ -585,6 +599,7 @@ def _execute_run(
             is_runserver=True,
             django_settings_module=django_settings_module,
             secret_key=secret_key,
+            lan_hosts=lan_hosts,
         )
 
         if opts.print_env:
@@ -780,9 +795,7 @@ def _execute_run(
         # the right one to advertise.
         if config.django.runserver_bind == "0.0.0.0":
             extra_hosts = tuple(
-                host
-                for host in discover_lan_hosts()
-                if host != config.django.runserver_display_host
+                host for host in lan_hosts if host != config.django.runserver_display_host
             )
             extra_app_urls = tuple(f"http://{host}:{runserver_port}/" for host in extra_hosts)
         else:
@@ -1108,13 +1121,19 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     elif sqlite_opt is False:
         sqlite = replace(sqlite, enabled=False)
     dj = config.django
-    if opts.bind:
-        # An explicit --bind should also drive the banner's clickable URL,
+    # Bind precedence: --bind CLI flag > RUN_SITE_BIND env > config default.
+    # Env-var slot lets a developer set ``RUN_SITE_BIND=0.0.0.0`` once in
+    # their shell profile and have every project bind to LAN by default,
+    # without editing each project's runsite.toml. Empty string is
+    # treated as unset.
+    bind = opts.bind or os.environ.get("RUN_SITE_BIND") or None
+    if bind:
+        # An explicit bind should also drive the banner's clickable URL,
         # otherwise we'd print "http://localhost:…" while runserver advertises
         # the bind host. 0.0.0.0 is a listen-everywhere sentinel that isn't
         # itself browseable, so fall back to localhost in that case.
-        display_host = "localhost" if opts.bind == "0.0.0.0" else opts.bind
-        dj = replace(dj, runserver_bind=opts.bind, runserver_display_host=display_host)
+        display_host = "localhost" if bind == "0.0.0.0" else bind
+        dj = replace(dj, runserver_bind=bind, runserver_display_host=display_host)
     dump = config.dump
     if opts.restore_jobs is not None:
         dump = replace(dump, restore_jobs=opts.restore_jobs)

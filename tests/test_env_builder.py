@@ -382,3 +382,130 @@ def test_redis_vars_omitted_when_redis_disabled(tmp_path: Path) -> None:
     assert "REDIS_URL" not in env
     # DB still wired.
     assert env["DEV_HELPERS_DB_HOST"] == "127.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# ALLOWED_HOSTS injection (LAN-aware)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_allowed_hosts_loopback_bind_returns_empty() -> None:
+    from run_site.env import compute_allowed_hosts
+
+    assert compute_allowed_hosts(bind="127.0.0.1", lan_hosts=("box.local",)) == ()
+    assert compute_allowed_hosts(bind="localhost", lan_hosts=("box.local",)) == ()
+    assert compute_allowed_hosts(bind="::1", lan_hosts=()) == ()
+
+
+def test_compute_allowed_hosts_wildcard_includes_loopback_and_lan() -> None:
+    from run_site.env import compute_allowed_hosts
+
+    out = compute_allowed_hosts(bind="0.0.0.0", lan_hosts=("box.local", "192.168.1.10"))
+    # Loopback names always present, then LAN, dedup'd, no wildcards.
+    assert out == ("localhost", "127.0.0.1", "[::1]", "box.local", "192.168.1.10")
+
+
+def test_compute_allowed_hosts_dedupes_overlap() -> None:
+    from run_site.env import compute_allowed_hosts
+
+    out = compute_allowed_hosts(bind="0.0.0.0", lan_hosts=("localhost", "10.0.0.1"))
+    assert out == ("localhost", "127.0.0.1", "[::1]", "10.0.0.1")
+
+
+def test_allowed_hosts_not_exported_for_loopback_bind(minimal_config) -> None:
+    """Default bind is 127.0.0.1 — no LAN exposure, no env vars set."""
+
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        lan_hosts=("box.local", "10.0.0.5"),
+        base_env={},
+    )
+    assert "DJANGO_ALLOWED_HOSTS" not in env
+    assert "DEV_HELPERS_ALLOWED_HOSTS" not in env
+
+
+def test_allowed_hosts_exported_for_wildcard_bind(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text('project_slug = "demo"\n[postgres]\n[redis]\n')
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    config = replace(
+        config,
+        django=replace(config.django, runserver_bind="0.0.0.0"),
+    )
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        lan_hosts=("box.local", "192.168.1.10"),
+        base_env={},
+    )
+    expected = "localhost,127.0.0.1,[::1],box.local,192.168.1.10"
+    # Both names — DEV_HELPERS_* contract for the helper, conventional
+    # DJANGO_ALLOWED_HOSTS for projects that read it directly.
+    assert env["DEV_HELPERS_ALLOWED_HOSTS"] == expected
+    assert env["DJANGO_ALLOWED_HOSTS"] == expected
+
+
+def test_allowed_hosts_user_renamed_via_env_mapping(tmp_path: Path) -> None:
+    """User can rename the conventional export via [env].allowed_hosts."""
+
+    from dataclasses import replace
+
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text(
+        'project_slug = "demo"\n[postgres]\n[redis]\n'
+        '[env]\nallowed_hosts = "MY_HOSTS"\n'
+    )
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    config = replace(config, django=replace(config.django, runserver_bind="0.0.0.0"))
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        lan_hosts=("box.local",),
+        base_env={},
+    )
+    assert "DJANGO_ALLOWED_HOSTS" not in env
+    assert env["MY_HOSTS"].startswith("localhost,127.0.0.1,[::1],box.local")
+    # DEV_HELPERS_* contract is unchanged regardless of user mapping.
+    assert env["DEV_HELPERS_ALLOWED_HOSTS"] == env["MY_HOSTS"]
+
+
+def test_allowed_hosts_disabled_when_mapping_set_to_null(tmp_path: Path) -> None:
+    """User can suppress the conventional export with ``allowed_hosts = null``.
+    DEV_HELPERS_* contract still fires — that's the helper's input,
+    decoupled from the user-facing name."""
+
+    from dataclasses import replace
+
+    from run_site.config import EnvConfig
+
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text('project_slug = "demo"\n[postgres]\n[redis]\n')
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    config = replace(
+        config,
+        django=replace(config.django, runserver_bind="0.0.0.0"),
+        env=EnvConfig(mapping={"allowed_hosts": None}),
+    )
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        lan_hosts=("box.local",),
+        base_env={},
+    )
+    assert "DJANGO_ALLOWED_HOSTS" not in env
+    assert env["DEV_HELPERS_ALLOWED_HOSTS"].endswith("box.local")

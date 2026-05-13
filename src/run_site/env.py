@@ -40,7 +40,50 @@ DEFAULT_ENV_MAPPING: dict[str, str] = {
     "database_url": "DATABASE_URL",
     "redis_url": "REDIS_URL",
     "secret_key": "DJANGO_SECRET_KEY",
+    "allowed_hosts": "DJANGO_ALLOWED_HOSTS",
 }
+
+# Loopback addresses always allowed regardless of bind. Mirrors what
+# Django's ``manage.py runserver`` is willing to serve on by default.
+_LOOPBACK_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
+
+
+def compute_allowed_hosts(
+    *,
+    bind: str,
+    lan_hosts: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Build the ALLOWED_HOSTS list to export for *bind*.
+
+    Returns ``()`` when binding to a loopback-only address — the project's
+    own ``ALLOWED_HOSTS`` already covers that case (Django allows
+    loopback by default in DEBUG mode), so we don't bother exporting.
+
+    For a wildcard bind (``0.0.0.0`` / ``::``) or any explicit non-
+    loopback IP, returns loopback names plus *lan_hosts* (typically the
+    machine's hostname and primary LAN IP from
+    :func:`run_site.host_discovery.discover_lan_hosts`). Order is stable
+    and dedup'd; no wildcards are emitted — we only inject hosts the
+    user can verify against the banner output.
+    """
+
+    if _is_loopback_bind(bind):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for host in (*_LOOPBACK_HOSTS, *lan_hosts):
+        if host and host not in seen:
+            seen.add(host)
+            out.append(host)
+    return tuple(out)
+
+
+def _is_loopback_bind(bind: str) -> bool:
+    """``True`` when *bind* points at a loopback-only interface."""
+
+    if not bind:
+        return True
+    return bind == "localhost" or bind.startswith("127.") or bind in ("::1", "[::1]")
 
 
 @dataclass(frozen=True)
@@ -79,6 +122,7 @@ def build_subprocess_env(
     django_settings_module: str | None = None,
     base_env: Mapping[str, str] | None = None,
     secret_key: str | None = None,
+    lan_hosts: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Build the env dict passed to a subprocess (migrate, runserver, etc).
 
@@ -112,7 +156,12 @@ def build_subprocess_env(
     # Project-side mapping ([env]) — layered on top of default conventional
     # names so DATABASE_URL / REDIS_URL / DJANGO_SECRET_KEY get exported
     # even when the user did not configure them.
-    project_values = _project_values(config, endpoints, secret_key=secret_key)
+    allowed_hosts = compute_allowed_hosts(
+        bind=config.django.runserver_bind, lan_hosts=lan_hosts
+    )
+    project_values = _project_values(
+        config, endpoints, secret_key=secret_key, allowed_hosts=allowed_hosts
+    )
     effective_mapping = effective_env_mapping(config.env.mapping)
     for key, var_name in effective_mapping.items():
         if var_name is None:
@@ -149,6 +198,12 @@ def build_subprocess_env(
     env["DEV_HELPERS_PROJECT_ROOT"] = str(config.project_root.resolve())
     if runserver_port is not None:
         env["DEV_HELPERS_PORT"] = str(runserver_port)
+    if allowed_hosts:
+        # Comma-joined; consumed by django-dev-helpers' apps.ready() to
+        # union into settings.ALLOWED_HOSTS at startup. Same string the
+        # default DJANGO_ALLOWED_HOSTS export carries — single source of
+        # truth.
+        env["DEV_HELPERS_ALLOWED_HOSTS"] = ",".join(allowed_hosts)
 
     if is_runserver:
         env["DJANGO_DEV_HELPERS_ENABLED"] = "1"
@@ -178,6 +233,7 @@ def _project_values(
     endpoints: ContainerEndpoints,
     *,
     secret_key: str | None = None,
+    allowed_hosts: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Build the lookup dict consumed by the project ``[env]`` mapping.
 
@@ -190,6 +246,8 @@ def _project_values(
     out: dict[str, str] = {}
     if secret_key is not None:
         out["secret_key"] = secret_key
+    if allowed_hosts:
+        out["allowed_hosts"] = ",".join(allowed_hosts)
     pg = config.postgres
     if pg.enabled and endpoints.pg_host is not None and endpoints.pg_port is not None:
         quoted_pwd = urllib.parse.quote_plus(pg.password)

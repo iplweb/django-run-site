@@ -43,6 +43,7 @@ ENV_KEYS: frozenset[str] = frozenset(
         "redis_host",
         "redis_port",
         "secret_key",
+        "allowed_hosts",
     ]
 )
 DRIVER_RE = re.compile(r"^(\+[A-Za-z0-9_]+|q[A-Za-z0-9_]*)?$")
