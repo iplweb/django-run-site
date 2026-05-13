@@ -1038,7 +1038,12 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
         sqlite = replace(sqlite, enabled=False)
     dj = config.django
     if opts.bind:
-        dj = replace(dj, runserver_bind=opts.bind)
+        # An explicit --bind should also drive the banner's clickable URL,
+        # otherwise we'd print "http://localhost:…" while runserver advertises
+        # the bind host. 0.0.0.0 is a listen-everywhere sentinel that isn't
+        # itself browseable, so fall back to localhost in that case.
+        display_host = "localhost" if opts.bind == "0.0.0.0" else opts.bind
+        dj = replace(dj, runserver_bind=opts.bind, runserver_display_host=display_host)
     dump = config.dump
     if opts.restore_jobs is not None:
         dump = replace(dump, restore_jobs=opts.restore_jobs)

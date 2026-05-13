@@ -122,6 +122,51 @@ def test_apply_cli_overrides_restore_jobs_overrides_config(
     assert out.dump.restore_jobs == 4
 
 
+def test_apply_cli_overrides_bind_propagates_to_display_host(
+    minimal_config,
+) -> None:
+    """``--bind HOST`` must also set the banner's display host — otherwise
+    the banner advertises ``http://localhost:…`` while runserver listens
+    on a different hostname."""
+
+    import argparse
+
+    from run_site.cli import _apply_cli_overrides
+
+    opts = argparse.Namespace(
+        postgres_image=None,
+        redis_image=None,
+        bind="mac-mini-micha",
+        restore_jobs=None,
+        no_install=False,
+    )
+    out = _apply_cli_overrides(minimal_config, opts)
+    assert out.django.runserver_bind == "mac-mini-micha"
+    assert out.django.runserver_display_host == "mac-mini-micha"
+
+
+def test_apply_cli_overrides_bind_zero_falls_back_to_localhost(
+    minimal_config,
+) -> None:
+    """``--bind 0.0.0.0`` binds to all interfaces but isn't itself
+    browseable — the banner should still show ``localhost``."""
+
+    import argparse
+
+    from run_site.cli import _apply_cli_overrides
+
+    opts = argparse.Namespace(
+        postgres_image=None,
+        redis_image=None,
+        bind="0.0.0.0",
+        restore_jobs=None,
+        no_install=False,
+    )
+    out = _apply_cli_overrides(minimal_config, opts)
+    assert out.django.runserver_bind == "0.0.0.0"
+    assert out.django.runserver_display_host == "localhost"
+
+
 def test_apply_cli_overrides_source_no_install_folds_into_opts(
     minimal_config,
 ) -> None:

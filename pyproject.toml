@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "django-run-site"
-version = "0.9.0"
+version = "0.9.1"
 description = "CLI orchestrator for local Django development — testcontainers PostgreSQL/Redis, dump loading, log multiplexing, hooks, and run-from-git."
 readme = "README.md"
 license = { file = "LICENSE" }
