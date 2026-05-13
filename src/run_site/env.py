@@ -27,6 +27,21 @@ from run_site.config import RunSiteConfig
 REDACT_VALUE = "<redacted>"
 SECRET_RE = re.compile(r"(?i).*(TOKEN|PASSWORD|SECRET|API_KEY).*")
 
+# Default env-var names used when the project's ``[env]`` table does not
+# explicitly map a key. Lets common 12-factor consumers (django-environ,
+# dj-database-url, plain ``os.environ['DJANGO_SECRET_KEY']``) Just Work
+# without any runsite.toml configuration.
+#
+# Resolution rules:
+# - Key not present in the user's [env] mapping → use this default name.
+# - Key present with a string → use the user's name (overrides default).
+# - Key present with ``null`` → disabled, no env var set.
+DEFAULT_ENV_MAPPING: dict[str, str] = {
+    "database_url": "DATABASE_URL",
+    "redis_url": "REDIS_URL",
+    "secret_key": "DJANGO_SECRET_KEY",
+}
+
 
 @dataclass(frozen=True)
 class ContainerEndpoints:
@@ -63,6 +78,7 @@ def build_subprocess_env(
     is_runserver: bool,
     django_settings_module: str | None = None,
     base_env: Mapping[str, str] | None = None,
+    secret_key: str | None = None,
 ) -> dict[str, str]:
     """Build the env dict passed to a subprocess (migrate, runserver, etc).
 
@@ -78,6 +94,11 @@ def build_subprocess_env(
     value the user already exported in their shell, but we do supply one
     for subprocesses (notably ``python -m celery``) that don't go through
     ``manage.py`` and therefore never get its ``setdefault`` treatment.
+
+    *secret_key*, when provided, is exported under the configured
+    ``[env].secret_key`` name (default ``DJANGO_SECRET_KEY``). Pass
+    ``None`` to skip the SECRET_KEY export entirely (the project supplies
+    its own).
     """
 
     env: dict[str, str] = dict(base_env if base_env is not None else os.environ)
@@ -88,9 +109,12 @@ def build_subprocess_env(
     if django_settings_module is not None:
         env.setdefault("DJANGO_SETTINGS_MODULE", django_settings_module)
 
-    # Project-side mapping ([env]).
-    project_values = _project_values(config, endpoints)
-    for key, var_name in config.env.mapping.items():
+    # Project-side mapping ([env]) — layered on top of default conventional
+    # names so DATABASE_URL / REDIS_URL / DJANGO_SECRET_KEY get exported
+    # even when the user did not configure them.
+    project_values = _project_values(config, endpoints, secret_key=secret_key)
+    effective_mapping = effective_env_mapping(config.env.mapping)
+    for key, var_name in effective_mapping.items():
         if var_name is None:
             continue
         value = project_values.get(key)
@@ -134,7 +158,27 @@ def build_subprocess_env(
     return env
 
 
-def _project_values(config: RunSiteConfig, endpoints: ContainerEndpoints) -> dict[str, str]:
+def effective_env_mapping(
+    user_mapping: Mapping[str, str | None],
+) -> dict[str, str | None]:
+    """Layer the user's ``[env]`` mapping on top of :data:`DEFAULT_ENV_MAPPING`.
+
+    The user's mapping wins on every key it sets (including explicit
+    ``null`` to disable the default export). Keys the user did not touch
+    fall through to the defaults.
+    """
+
+    out: dict[str, str | None] = dict(DEFAULT_ENV_MAPPING)
+    out.update(user_mapping)
+    return out
+
+
+def _project_values(
+    config: RunSiteConfig,
+    endpoints: ContainerEndpoints,
+    *,
+    secret_key: str | None = None,
+) -> dict[str, str]:
     """Build the lookup dict consumed by the project ``[env]`` mapping.
 
     Keys for a disabled service are omitted entirely — so a user with
@@ -144,6 +188,8 @@ def _project_values(config: RunSiteConfig, endpoints: ContainerEndpoints) -> dic
     """
 
     out: dict[str, str] = {}
+    if secret_key is not None:
+        out["secret_key"] = secret_key
     pg = config.postgres
     if pg.enabled and endpoints.pg_host is not None and endpoints.pg_port is not None:
         quoted_pwd = urllib.parse.quote_plus(pg.password)

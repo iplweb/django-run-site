@@ -28,7 +28,6 @@ from run_site.containers import (
     start_containers,
     stop_containers,
 )
-from run_site.display_detect import HeadlessSignal, detect_headless_session
 from run_site.discovery import (
     detect_services_from_settings,
     discover_local_python,
@@ -37,6 +36,7 @@ from run_site.discovery import (
     discover_settings_module,
     is_django_manage_py,
 )
+from run_site.display_detect import HeadlessSignal, detect_headless_session
 from run_site.dumps import execute_post_start, plan_dump
 from run_site.env import (
     ContainerEndpoints,
@@ -56,6 +56,7 @@ from run_site.processes import (
     run_oneshot,
     wait_for_http,
 )
+from run_site.secrets_store import load_or_generate_secret_key
 from run_site.sidecar import SidecarInfo, remove_sidecar, write_sidecar
 from run_site.source.deps_installer import install_dependencies
 from run_site.source.from_git import (
@@ -543,6 +544,14 @@ def _execute_run(
     containers = start_containers(config=config, reuse=opts.reuse, init_script=init_script)
     runserver_port = opts.port or find_free_port(config.django.runserver_bind)
     autologin_token = generate_autologin_token()
+    # SECRET_KEY: read-or-generate-and-persist under .run-site/secret_key.
+    # Skipped when the user explicitly disabled the export via
+    # ``[env].secret_key = null`` — they're driving the value themselves.
+    secret_key: str | None
+    if config.env.mapping.get("secret_key", "<default>") is None:
+        secret_key = None
+    else:
+        secret_key = load_or_generate_secret_key(config.project_root)
 
     proc_group = ProcessGroup(mux)
 
@@ -565,6 +574,7 @@ def _execute_run(
             runserver_port=runserver_port,
             is_runserver=False,
             django_settings_module=django_settings_module,
+            secret_key=secret_key,
         )
         env_for_runserver = build_subprocess_env(
             config=config,
@@ -573,6 +583,7 @@ def _execute_run(
             runserver_port=runserver_port,
             is_runserver=True,
             django_settings_module=django_settings_module,
+            secret_key=secret_key,
         )
 
         if opts.print_env:

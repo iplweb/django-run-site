@@ -260,6 +260,114 @@ def test_django_settings_module_absent_when_not_provided(minimal_config) -> None
     assert "DJANGO_SETTINGS_MODULE" not in env
 
 
+# ---------------------------------------------------------------------------
+# SECRET_KEY auto-export + default conventional env-var names
+# ---------------------------------------------------------------------------
+
+
+def test_secret_key_exported_under_default_name(minimal_config) -> None:
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        secret_key="s3cret-value",
+        base_env={},
+    )
+    assert env["DJANGO_SECRET_KEY"] == "s3cret-value"
+
+
+def test_secret_key_absent_when_not_provided(minimal_config) -> None:
+    env = build_subprocess_env(
+        config=minimal_config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        base_env={},
+    )
+    assert "DJANGO_SECRET_KEY" not in env
+
+
+def test_secret_key_custom_var_name(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text(
+        'project_slug = "demo"\n'
+        "[postgres]\n"
+        "[redis]\n"
+        "[env]\n"
+        'secret_key = "MY_SECRET"\n'
+    )
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        secret_key="abc",
+        base_env={},
+    )
+    assert env["MY_SECRET"] == "abc"
+    # The default name should NOT also be set when user mapped it elsewhere.
+    assert "DJANGO_SECRET_KEY" not in env
+
+
+def test_secret_key_disabled_by_null_mapping(tmp_path: Path) -> None:
+    """Setting ``[env].secret_key`` to a TOML literal that decodes as null
+    (we can't write ``null`` in TOML directly, so we test the equivalent
+    by building the EnvConfig with an explicit None)."""
+
+    from run_site.config import EnvConfig
+    from run_site.env import effective_env_mapping
+
+    mapping = effective_env_mapping(EnvConfig(mapping={"secret_key": None}).mapping)
+    assert mapping["secret_key"] is None
+
+
+def test_default_database_url_export_without_explicit_mapping(tmp_path: Path) -> None:
+    """A project that does not configure ``[env]`` at all should still
+    receive a conventional ``DATABASE_URL`` when Postgres is on."""
+
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text('project_slug = "demo"\n[postgres]\n[redis]\n')
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        base_env={},
+    )
+    assert env["DATABASE_URL"].startswith("postgres://")
+    assert env["REDIS_URL"].startswith("redis://")
+
+
+def test_user_override_wins_over_default_mapping(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "runsite.toml"
+    cfg_path.write_text(
+        'project_slug = "demo"\n'
+        "[postgres]\n"
+        "[redis]\n"
+        "[env]\n"
+        'database_url = "MY_DB_URL"\n'
+    )
+    config = load_config(config_path=cfg_path, project_root=tmp_path)
+    env = build_subprocess_env(
+        config=config,
+        endpoints=make_endpoints(),
+        autologin_token="tok",
+        runserver_port=4242,
+        is_runserver=True,
+        base_env={},
+    )
+    assert env["MY_DB_URL"].startswith("postgres://")
+    # Default name no longer exported — user took control.
+    assert "DATABASE_URL" not in env
+
+
 def test_redis_vars_omitted_when_redis_disabled(tmp_path: Path) -> None:
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text(
