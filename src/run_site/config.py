@@ -258,21 +258,32 @@ def resolve_auto_enabled(
     config: RunSiteConfig,
     *,
     detected: DetectedServices | None,
+    required_env_vars: set[str] | None = None,
 ) -> tuple[RunSiteConfig, list[str]]:
     """Resolve any ``"auto"`` ``enabled`` field to a concrete ``bool``.
 
     Returns the updated config plus a list of human-readable notes the
     caller should surface (e.g. via the log multiplexer or stderr).
 
-    Auto-resolution rules:
+    Auto-resolution rules, in order:
 
-    * ``postgres.enabled = "auto"``: True iff settings.py shows PG.
-    * ``sqlite.enabled = "auto"``: True iff settings.py shows SQLite *and*
-      ``postgres.enabled`` did not resolve to True (PG wins).
-    * ``redis.enabled = "auto"``: True iff settings.py shows Redis.
+    1. ``postgres.enabled = "auto"``: True iff settings.py shows PG (via
+       ``django.db.backends.postgresql`` token, ``postgres://`` URL, etc).
+    2. ``sqlite.enabled = "auto"``: True iff settings.py shows SQLite
+       *and* ``postgres.enabled`` did not resolve to True (PG wins).
+    3. ``redis.enabled = "auto"``: True iff settings.py shows Redis.
+    4. **Env-var augmentation**: when *required_env_vars* shows the
+       project reads ``DATABASE_URL`` (under whatever name the user
+       configured via ``[env].database_url``) but neither PG nor SQLite
+       resolved enabled, force-enable Postgres so the project actually
+       gets a working URL. Same for ``REDIS_URL`` → Redis. This rescues
+       the common case where ``settings.py`` does ``env.db_url("DATABASE_URL")``
+       with no inline backend hint, leaving token detection blind.
 
     When *detected* is ``None`` (couldn't scan settings.py), every
-    ``"auto"`` value becomes ``False`` and a single note is appended.
+    ``"auto"`` value defaults to ``False`` before the env-var
+    augmentation runs — env vars alone are still enough to enable a
+    service.
     """
 
     notes: list[str] = []
@@ -292,19 +303,67 @@ def resolve_auto_enabled(
     else:
         scanned = detected
 
+    # Track which fields started as "auto" — only those are eligible for
+    # the env-var augmentation below. Explicit ``enabled = false`` from
+    # the user is a directive ("I'm bringing my own DB"), not a hint.
+    pg_was_auto = config.postgres.enabled == "auto"
+    sqlite_was_auto = config.sqlite.enabled == "auto"
+    redis_was_auto = config.redis.enabled == "auto"
+
     pg_enabled = config.postgres.enabled
-    if pg_enabled == "auto":
+    if pg_was_auto:
         pg_enabled = scanned.postgres
         notes.append(f"[postgres].enabled auto → {pg_enabled}")
     sqlite_enabled = config.sqlite.enabled
-    if sqlite_enabled == "auto":
+    if sqlite_was_auto:
         # PG wins when both detected and SQLite is in auto.
         sqlite_enabled = bool(scanned.sqlite and not pg_enabled)
         notes.append(f"[sqlite].enabled auto → {sqlite_enabled}")
     redis_enabled = config.redis.enabled
-    if redis_enabled == "auto":
+    if redis_was_auto:
         redis_enabled = scanned.redis
         notes.append(f"[redis].enabled auto → {redis_enabled}")
+
+    # Env-var augmentation: if the project reads DATABASE_URL / REDIS_URL
+    # (whatever name the user configured via [env]) but no DB/cache
+    # service got enabled, switch on Postgres / Redis. Covers
+    # ``env.db_url("DATABASE_URL")`` settings.py files where the engine
+    # only appears at runtime once the URL is parsed. Only fields that
+    # started as "auto" are eligible — explicit ``enabled = false`` is
+    # a user directive we don't override.
+    if required_env_vars:
+        # Effective env mapping (defaults layered with user [env]) —
+        # imported lazily to avoid pulling env_builder into a config
+        # module that historically had no run-site internal deps.
+        from run_site.env import effective_env_mapping
+
+        eff = effective_env_mapping(config.env.mapping)
+        db_var = eff.get("database_url")
+        redis_var = eff.get("redis_url")
+        if (
+            db_var is not None
+            and db_var in required_env_vars
+            and pg_was_auto
+            and not pg_enabled
+            and not sqlite_enabled
+        ):
+            pg_enabled = True
+            notes.append(
+                f"settings.py reads {db_var!r} but no DB engine detected; "
+                "enabling [postgres] (override with [postgres].enabled = false "
+                "or [sqlite].enabled = true)"
+            )
+        if (
+            redis_var is not None
+            and redis_var in required_env_vars
+            and redis_was_auto
+            and not redis_enabled
+        ):
+            redis_enabled = True
+            notes.append(
+                f"settings.py reads {redis_var!r} but Redis was not detected; "
+                "enabling [redis] (override with [redis].enabled = false)"
+            )
 
     # Post-resolution mutual-exclusion check (defensive — _build_config
     # already refuses the static case where both are explicit-true).

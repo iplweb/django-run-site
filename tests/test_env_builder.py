@@ -293,11 +293,7 @@ def test_secret_key_absent_when_not_provided(minimal_config) -> None:
 def test_secret_key_custom_var_name(tmp_path: Path) -> None:
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text(
-        'project_slug = "demo"\n'
-        "[postgres]\n"
-        "[redis]\n"
-        "[env]\n"
-        'secret_key = "MY_SECRET"\n'
+        'project_slug = "demo"\n[postgres]\n[redis]\n[env]\nsecret_key = "MY_SECRET"\n'
     )
     config = load_config(config_path=cfg_path, project_root=tmp_path)
     env = build_subprocess_env(
@@ -348,11 +344,7 @@ def test_default_database_url_export_without_explicit_mapping(tmp_path: Path) ->
 def test_user_override_wins_over_default_mapping(tmp_path: Path) -> None:
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text(
-        'project_slug = "demo"\n'
-        "[postgres]\n"
-        "[redis]\n"
-        "[env]\n"
-        'database_url = "MY_DB_URL"\n'
+        'project_slug = "demo"\n[postgres]\n[redis]\n[env]\ndatabase_url = "MY_DB_URL"\n'
     )
     config = load_config(config_path=cfg_path, project_root=tmp_path)
     env = build_subprocess_env(

@@ -16,6 +16,7 @@ from run_site.config import (
     resolve_auto_enabled,
 )
 from run_site.discovery import (
+    detect_required_env_vars,
     detect_services_from_settings,
     discover_settings_module,
 )
@@ -323,6 +324,194 @@ def test_detect_returns_none_when_no_settings_module(tmp_path: Path) -> None:
     manage.write_text("# no DJANGO_SETTINGS_MODULE setdefault here\n")
     detected = detect_services_from_settings(manage_py=manage, project_root=tmp_path, env={})
     assert detected is None
+
+
+def test_detect_services_with_src_layout(tmp_path: Path) -> None:
+    """``src/`` layout: manage.py at root, package under ``src/<pkg>/``."""
+
+    manage = tmp_path / "manage.py"
+    manage.write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))\n"
+        "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'proj.settings')\n"
+    )
+    pkg = tmp_path / "src" / "proj"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").touch()
+    (pkg / "settings.py").write_text(
+        "DATABASES = {'default': {'ENGINE': 'django.db.backends.postgresql'}}\n"
+    )
+    detected = detect_services_from_settings(manage_py=manage, project_root=tmp_path, env={})
+    assert detected is not None
+    assert detected.postgres is True
+
+
+# ---------------------------------------------------------------------------
+# detect_required_env_vars
+# ---------------------------------------------------------------------------
+
+
+def test_required_env_vars_os_environ_subscript(tmp_path: Path) -> None:
+    manage = _make_django_project(
+        tmp_path,
+        settings_body="import os\nDB = os.environ['DATABASE_URL']\n",
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"DATABASE_URL"}
+
+
+def test_required_env_vars_os_environ_get(tmp_path: Path) -> None:
+    manage = _make_django_project(
+        tmp_path,
+        settings_body=(
+            "import os\n"
+            "S = os.environ.get('DJANGO_SECRET_KEY', 'dev')\n"
+            "DB = os.environ.get('DATABASE_URL')\n"
+        ),
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"DJANGO_SECRET_KEY", "DATABASE_URL"}
+
+
+def test_required_env_vars_os_getenv(tmp_path: Path) -> None:
+    manage = _make_django_project(
+        tmp_path,
+        settings_body="import os\nR = os.getenv('REDIS_URL', '')\n",
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"REDIS_URL"}
+
+
+def test_required_env_vars_django_environ(tmp_path: Path) -> None:
+    """The exact failure mode from bobik-2: ``env.db_url('DATABASE_URL')``
+    leaves no engine token in source — env-var detection has to catch it."""
+
+    manage = _make_django_project(
+        tmp_path,
+        settings_body=(
+            "import environ\n"
+            "env = environ.Env()\n"
+            "DATABASES = {'default': env.db_url('DATABASE_URL')}\n"
+            "CACHES = {'default': env.cache_url('CACHE_URL')}\n"
+            "DEBUG = env.bool('DEBUG', default=False)\n"
+        ),
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"DATABASE_URL", "CACHE_URL", "DEBUG"}
+
+
+def test_required_env_vars_decouple_config(tmp_path: Path) -> None:
+    manage = _make_django_project(
+        tmp_path,
+        settings_body=("from decouple import config\nSECRET_KEY = config('SECRET_KEY')\n"),
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"SECRET_KEY"}
+
+
+def test_required_env_vars_ignores_dynamic_lookups(tmp_path: Path) -> None:
+    """Non-literal arg → can't determine var name → silently skipped."""
+
+    manage = _make_django_project(
+        tmp_path,
+        settings_body=(
+            "import os\n"
+            "names = ['DATABASE_URL', 'REDIS_URL']\n"
+            "for n in names:\n"
+            "    os.environ.get(n)\n"
+        ),
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == set()
+
+
+def test_required_env_vars_returns_none_without_settings(tmp_path: Path) -> None:
+    manage = tmp_path / "manage.py"
+    manage.write_text("# no settings module\n")
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found is None
+
+
+def test_required_env_vars_follows_relative_imports(tmp_path: Path) -> None:
+    manage = _make_django_project(
+        tmp_path,
+        settings_module="proj.settings",
+        settings_body="from .base import *\n",
+        extra_files={
+            "proj/base.py": "import os\nDB = os.environ['DATABASE_URL']\n",
+        },
+    )
+    found = detect_required_env_vars(manage_py=manage, project_root=tmp_path, env={})
+    assert found == {"DATABASE_URL"}
+
+
+# ---------------------------------------------------------------------------
+# resolve_auto_enabled augmented with required_env_vars
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_required_db_url_enables_postgres_when_no_engine_detected(
+    tmp_path: Path,
+) -> None:
+    """The bobik-2 case: settings reads DATABASE_URL but the static scan
+    found no engine token — resolution should default to postgres so the
+    project actually gets a working URL."""
+
+    cfg = _bare_cfg(tmp_path)
+    detected = DetectedServices(postgres=False, sqlite=False, redis=False)
+    resolved, notes = resolve_auto_enabled(
+        cfg, detected=detected, required_env_vars={"DATABASE_URL"}
+    )
+    assert resolved.postgres.enabled is True
+    assert resolved.sqlite.enabled is False
+    assert any("DATABASE_URL" in n and "postgres" in n for n in notes)
+
+
+def test_resolve_required_redis_url_enables_redis(tmp_path: Path) -> None:
+    cfg = _bare_cfg(tmp_path)
+    detected = DetectedServices(postgres=False, sqlite=False, redis=False)
+    resolved, notes = resolve_auto_enabled(cfg, detected=detected, required_env_vars={"REDIS_URL"})
+    assert resolved.redis.enabled is True
+    assert any("REDIS_URL" in n for n in notes)
+
+
+def test_resolve_does_not_override_explicit_false(tmp_path: Path) -> None:
+    """User said no postgres — env var augmentation must not flip it on."""
+
+    cfg = _bare_cfg(tmp_path, pg_enabled=False, sqlite_enabled=False)
+    detected = DetectedServices(postgres=False, sqlite=False, redis=False)
+    resolved, _ = resolve_auto_enabled(cfg, detected=detected, required_env_vars={"DATABASE_URL"})
+    assert resolved.postgres.enabled is False
+    assert resolved.sqlite.enabled is False
+
+
+def test_resolve_skips_db_augmentation_when_sqlite_already_enabled(
+    tmp_path: Path,
+) -> None:
+    cfg = _bare_cfg(tmp_path, pg_enabled=False, sqlite_enabled=True)
+    detected = DetectedServices(postgres=False, sqlite=True, redis=False)
+    resolved, _ = resolve_auto_enabled(cfg, detected=detected, required_env_vars={"DATABASE_URL"})
+    # Already enabled → no postgres flip-on.
+    assert resolved.postgres.enabled is False
+    assert resolved.sqlite.enabled is True
+
+
+def test_resolve_respects_user_renamed_env_var(tmp_path: Path) -> None:
+    """User remapped database_url → MY_DB_URL via [env]; augmentation
+    should look for MY_DB_URL in required vars, not DATABASE_URL."""
+
+    from run_site.config import EnvConfig
+
+    cfg = _bare_cfg(tmp_path)
+    cfg = cfg.__class__(**{**cfg.__dict__, "env": EnvConfig(mapping={"database_url": "MY_DB_URL"})})
+    detected = DetectedServices(postgres=False, sqlite=False, redis=False)
+    # Default DATABASE_URL — should NOT trigger.
+    resolved, _ = resolve_auto_enabled(cfg, detected=detected, required_env_vars={"DATABASE_URL"})
+    assert resolved.postgres.enabled is False
+    # Renamed var — SHOULD trigger.
+    resolved2, notes = resolve_auto_enabled(cfg, detected=detected, required_env_vars={"MY_DB_URL"})
+    assert resolved2.postgres.enabled is True
+    assert any("MY_DB_URL" in n for n in notes)
 
 
 # ---------------------------------------------------------------------------

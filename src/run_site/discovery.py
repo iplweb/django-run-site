@@ -459,13 +459,20 @@ def _settings_module_to_paths(
 
     Django settings can live either as ``<pkg>/settings.py`` (single
     file) or ``<pkg>/settings/__init__.py`` + ``base.py`` / ``dev.py``
-    (package). We search relative to *both* the project root and
-    ``manage.py.parent`` because ``src/`` layouts put the package under
-    ``src/<pkg>/settings.py`` even though the project root is the repo.
+    (package). We search relative to the project root, ``manage.py.parent``,
+    and ``<root>/src`` and ``<manage_py.parent>/src`` — the last two cover
+    the common ``src/`` layout where ``manage.py`` lives at the repo root
+    but the package sits under ``src/<pkg>/settings.py`` (manage.py inserts
+    ``src/`` into ``sys.path`` at startup).
     """
 
     parts = module.split(".")
-    bases = [project_root, manage_py.parent]
+    bases = [
+        project_root,
+        manage_py.parent,
+        project_root / "src",
+        manage_py.parent / "src",
+    ]
     seen: set[Path] = set()
     out: list[Path] = []
     for base in bases:
@@ -566,6 +573,149 @@ def detect_services_from_settings(
         sqlite=_scan_tokens(blob, _SQLITE_TOKENS),
         redis=_scan_tokens(blob, _REDIS_TOKENS),
     )
+
+
+# Names of django-environ ``Env`` instances projects conventionally bind
+# to (``env = environ.Env(...)`` or ``env = Env(...)``). We match calls
+# against this set rather than chasing assignment chains — covers the
+# overwhelmingly common case at zero static-analysis cost. ``config`` is
+# the python-decouple convention.
+_ENV_INSTANCE_NAMES = frozenset({"env", "ENV", "config"})
+
+# Bare-function lookups treated as env-var reads. ``os.environ[X]``,
+# ``os.environ.get(X)``, ``os.getenv(X)``, ``getenv(X)``.
+_OS_ENVIRON_FUNC_NAMES = frozenset({"getenv"})
+
+
+def detect_required_env_vars(
+    *,
+    manage_py: Path,
+    project_root: Path,
+    env: dict[str, str] | None = None,
+    max_followed: int = 4,
+) -> set[str] | None:
+    """Statically scan settings module(s) for env-var lookups.
+
+    Returns the set of env-var names referenced via:
+
+    * ``os.environ['X']`` / ``os.environ["X"]`` (subscript)
+    * ``os.environ.get('X', ...)`` / ``os.getenv('X', ...)`` / bare
+      ``getenv('X')``
+    * django-environ: ``env('X')``, ``env.db_url('X')``, ``env.cache('X')``,
+      ``env.url('X')``, ``env.bool('X')``, etc. — any attribute call on an
+      ``env`` / ``ENV`` instance with a string-literal first arg
+    * python-decouple: ``config('X')``
+
+    Returns ``None`` when no settings module can be located (same
+    semantics as :func:`detect_services_from_settings`). Best-effort —
+    dynamic lookups (``os.environ.get(some_var)``) are silently ignored.
+    """
+
+    module = discover_settings_module(manage_py=manage_py, env=env)
+    if module is None:
+        return None
+    seeds = _settings_module_to_paths(module=module, project_root=project_root, manage_py=manage_py)
+    if not seeds:
+        return None
+
+    visited: set[Path] = set()
+    found: set[str] = set()
+    queue: list[Path] = list(seeds)
+    while queue and len(visited) < max_followed:
+        path = queue.pop(0)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        found.update(_extract_env_vars_from_ast(tree))
+        for sibling in _relative_sibling_imports(text, path.parent):
+            if sibling.is_file() and sibling.resolve() not in visited:
+                queue.append(sibling)
+    return found
+
+
+def _extract_env_vars_from_ast(tree: ast.AST) -> set[str]:
+    """Walk *tree* and collect string-literal env-var names from the
+    common lookup shapes documented in :func:`detect_required_env_vars`.
+    """
+
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        # os.environ['X']  /  os.environ["X"]
+        if isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+            name = _const_str(node.slice)
+            if name is not None:
+                out.add(name)
+            continue
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        first = _const_str(node.args[0])
+        if first is None:
+            continue
+        func = node.func
+        # os.environ.get('X', ...)
+        if isinstance(func, ast.Attribute) and func.attr == "get" and _is_os_environ(func.value):
+            out.add(first)
+            continue
+        # os.getenv('X', ...) / getenv('X', ...)
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in _OS_ENVIRON_FUNC_NAMES
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "os"
+        ):
+            out.add(first)
+            continue
+        if isinstance(func, ast.Name) and func.id in _OS_ENVIRON_FUNC_NAMES:
+            out.add(first)
+            continue
+        # env('X') / config('X') / ENV('X')
+        if isinstance(func, ast.Name) and func.id in _ENV_INSTANCE_NAMES:
+            out.add(first)
+            continue
+        # env.db_url('X'), env.cache('X'), env.bool('X'), env.url('X'), …
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in _ENV_INSTANCE_NAMES
+        ):
+            out.add(first)
+            continue
+    return out
+
+
+def _is_os_environ(node: ast.AST) -> bool:
+    """True for the ``os.environ`` attribute access (any binding alias is
+    not handled — we trust the canonical form, since shadowing ``os`` is
+    rare in settings files)."""
+
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
+
+
+def _const_str(node: ast.AST) -> str | None:
+    """Return the string value of *node* when it's a literal string
+    constant, else ``None``. Handles ``ast.Constant`` (Py 3.8+) only —
+    legacy ``ast.Str`` is gone in 3.12."""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 _RELATIVE_IMPORT_RE = re.compile(

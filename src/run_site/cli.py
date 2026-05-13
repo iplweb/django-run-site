@@ -29,6 +29,7 @@ from run_site.containers import (
     stop_containers,
 )
 from run_site.discovery import (
+    detect_required_env_vars,
     detect_services_from_settings,
     discover_local_python,
     discover_manage_py,
@@ -1132,6 +1133,12 @@ def _resolve_services(
 ) -> RunSiteConfig:
     """Resolve ``"auto"`` ``enabled`` fields by scanning settings.py.
 
+    Detection runs in two passes — token scan (``django.db.backends.*``,
+    URLs) plus env-var scan (``DATABASE_URL``, ``REDIS_URL`` lookups).
+    The env-var pass rescues projects whose settings.py only references
+    backends through ``env.db_url(...)``, where the URL — and therefore
+    the engine name — never appears as a literal in source.
+
     Idempotent for configs with no remaining ``"auto"`` values: still
     calls :func:`resolve_auto_enabled` which is a cheap no-op then.
     """
@@ -1141,15 +1148,20 @@ def _resolve_services(
         or config.redis.enabled == "auto"
         or config.sqlite.enabled == "auto"
     )
-    detected = (
-        detect_services_from_settings(
+    detected = None
+    required_env_vars: set[str] | None = None
+    if needs_detection:
+        detected = detect_services_from_settings(
             manage_py=manage_py,
             project_root=config.project_root,
         )
-        if needs_detection
-        else None
+        required_env_vars = detect_required_env_vars(
+            manage_py=manage_py,
+            project_root=config.project_root,
+        )
+    resolved, notes = resolve_auto_enabled(
+        config, detected=detected, required_env_vars=required_env_vars
     )
-    resolved, notes = resolve_auto_enabled(config, detected=detected)
     if mux is not None:
         for note in notes:
             mux.write("config", "blue", f"[config] {note}")
