@@ -74,6 +74,7 @@ from run_site.sqlite import (
     gitignore_warning,
     prepare_sqlite,
 )
+from run_site.sticky_banner import StickyRegion
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,24 @@ def _build_full_parser(
     cel.add_argument("--no-celery", dest="with_celery", action="store_false")
     cel.add_argument("--with-celery-beat", dest="with_beat", action="store_true", default=None)
     cel.add_argument("--no-celery-beat", dest="with_beat", action="store_false")
+
+    # Banner display — sticky/non-sticky. Default (None) defers to
+    # [banner].sticky in config, which itself defaults to "auto".
+    banner_group = parser.add_argument_group("Banner")
+    sticky_group = banner_group.add_mutually_exclusive_group()
+    sticky_group.add_argument(
+        "--sticky-banner",
+        dest="sticky_banner",
+        action="store_true",
+        default=None,
+        help="Pin the banner to the top of the terminal; logs scroll below it.",
+    )
+    sticky_group.add_argument(
+        "--no-sticky-banner",
+        dest="sticky_banner",
+        action="store_false",
+        help="Print the banner inline (legacy behavior).",
+    )
 
     diag = parser.add_argument_group("Diagnostics")
     diag.add_argument("--dry-run", action="store_true")
@@ -837,122 +856,127 @@ def _execute_run(
                 browser_status=browser_status,
             ),
         )
-        sys.stdout.write(banner)
-        sys.stdout.flush()
+        sticky_enabled = _resolve_sticky_choice(opts, config)
 
-        # Spawn the web process — runserver by default, or whatever
-        # `[django].web_command` overrides it with (daphne, gunicorn, …).
-        web_argv = _build_web_argv(
-            config=config,
-            python=python,
-            manage_py=manage_py,
-            runserver_port=runserver_port,
-        )
-        proc_group.spawn(
-            name="web",
-            argv=web_argv,
-            cwd=config.project_root,
-            env=env_for_runserver,
-            color="cyan",
-        )
-
-        if _celery_active(config, opts):
-            if config.celery.app is None:
-                raise RunSiteError("Celery is requested but [celery].app is not set in config")
-            proc_group.spawn(
-                name="celery",
-                argv=(
-                    *python,
-                    "-m",
-                    "celery",
-                    "-A",
-                    config.celery.app,
-                    "worker",
-                    f"--pool={config.celery.worker_pool}",
-                    "-l",
-                    config.celery.worker_log_level,
-                    *config.celery.worker_extra_args,
-                ),
-                cwd=config.project_root,
-                env=env_for_subprocess,
-                color="green",
+        # Pin the banner to the top of the terminal before spawning any
+        # subprocess so the mux threads' first lines land inside the
+        # scroll region rather than racing the install.
+        with StickyRegion(banner, enabled=sticky_enabled):
+            # Spawn the web process — runserver by default, or whatever
+            # `[django].web_command` overrides it with (daphne, gunicorn, …).
+            web_argv = _build_web_argv(
+                config=config,
+                python=python,
+                manage_py=manage_py,
+                runserver_port=runserver_port,
             )
-            with_beat = opts.with_beat if opts.with_beat is not None else config.celery.with_beat
-            if with_beat:
+            proc_group.spawn(
+                name="web",
+                argv=web_argv,
+                cwd=config.project_root,
+                env=env_for_runserver,
+                color="cyan",
+            )
+
+            if _celery_active(config, opts):
+                if config.celery.app is None:
+                    raise RunSiteError("Celery is requested but [celery].app is not set in config")
                 proc_group.spawn(
-                    name="celery-beat",
+                    name="celery",
                     argv=(
                         *python,
                         "-m",
                         "celery",
                         "-A",
                         config.celery.app,
-                        "beat",
+                        "worker",
+                        f"--pool={config.celery.worker_pool}",
                         "-l",
-                        config.celery.beat_log_level,
-                        *config.celery.beat_extra_args,
+                        config.celery.worker_log_level,
+                        *config.celery.worker_extra_args,
                     ),
                     cwd=config.project_root,
                     env=env_for_subprocess,
-                    color="magenta",
+                    color="green",
                 )
+                with_beat = (
+                    opts.with_beat if opts.with_beat is not None else config.celery.with_beat
+                )
+                if with_beat:
+                    proc_group.spawn(
+                        name="celery-beat",
+                        argv=(
+                            *python,
+                            "-m",
+                            "celery",
+                            "-A",
+                            config.celery.app,
+                            "beat",
+                            "-l",
+                            config.celery.beat_log_level,
+                            *config.celery.beat_extra_args,
+                        ),
+                        cwd=config.project_root,
+                        env=env_for_subprocess,
+                        color="magenta",
+                    )
 
-        # Extra processes.
-        tmpl = TemplateContext(
-            python=python,
-            manage_py=manage_py,
-            manage_dir=manage_py.parent,
-            project_root=config.project_root,
-            port=runserver_port,
-        )
-        for ep in config.extra_processes:
-            dest = f"extra_{ep.name.replace('-', '_')}"
-            chosen = getattr(opts, dest, None)
-            enabled = chosen if chosen is not None else ep.enabled_default
-            if not enabled:
-                continue
-            proc_group.spawn(
-                name=ep.name,
-                argv=tmpl.expand(ep.command),
-                cwd=config.project_root / ep.cwd,
-                env=env_for_subprocess,
-                color=ep.color,
+            # Extra processes.
+            tmpl = TemplateContext(
+                python=python,
+                manage_py=manage_py,
+                manage_dir=manage_py.parent,
+                project_root=config.project_root,
+                port=runserver_port,
             )
-
-        # docker logs -f for PG (if requested and PG was actually started).
-        if (
-            config.postgres.enabled
-            and config.postgres.stream_logs
-            and containers.pg_container_id is not None
-        ):
-            argv = docker_logs_follow(containers.pg_container_id)
-            if argv:
+            for ep in config.extra_processes:
+                dest = f"extra_{ep.name.replace('-', '_')}"
+                chosen = getattr(opts, dest, None)
+                enabled = chosen if chosen is not None else ep.enabled_default
+                if not enabled:
+                    continue
                 proc_group.spawn(
-                    name="pg",
-                    argv=argv,
-                    cwd=config.project_root,
-                    env=_baseline_env(),
-                    color="yellow",
+                    name=ep.name,
+                    argv=tmpl.expand(ep.command),
+                    cwd=config.project_root / ep.cwd,
+                    env=env_for_subprocess,
+                    color=ep.color,
                 )
 
-        # Probe + browser open. The probe exists only to gate the browser
-        # open on a 2xx — when we've already decided not to open, there's
-        # nothing left to wait for.
-        if should_open_browser:
-            probe_url = (
-                f"http://{config.django.runserver_display_host}:{runserver_port}"
-                f"{config.django.browser_probe_path}"
-            )
-            probe_thread = threading.Thread(
-                target=_probe_and_open_browser,
-                args=(probe_url, homepage_url, config),
-                daemon=True,
-            )
-            probe_thread.start()
+            # docker logs -f for PG (if requested and PG was actually started).
+            if (
+                config.postgres.enabled
+                and config.postgres.stream_logs
+                and containers.pg_container_id is not None
+            ):
+                argv = docker_logs_follow(containers.pg_container_id)
+                if argv:
+                    proc_group.spawn(
+                        name="pg",
+                        argv=argv,
+                        cwd=config.project_root,
+                        env=_baseline_env(),
+                        color="yellow",
+                    )
 
-        signal.signal(signal.SIGINT, lambda *_: _trigger_shutdown(proc_group))
-        signal.signal(signal.SIGTERM, lambda *_: _trigger_shutdown(proc_group))
-        proc_group.wait_any()
+            # Probe + browser open. The probe exists only to gate the browser
+            # open on a 2xx — when we've already decided not to open, there's
+            # nothing left to wait for.
+            if should_open_browser:
+                probe_url = (
+                    f"http://{config.django.runserver_display_host}:{runserver_port}"
+                    f"{config.django.browser_probe_path}"
+                )
+                probe_thread = threading.Thread(
+                    target=_probe_and_open_browser,
+                    args=(probe_url, homepage_url, config),
+                    daemon=True,
+                )
+                probe_thread.start()
+
+            signal.signal(signal.SIGINT, lambda *_: _trigger_shutdown(proc_group))
+            signal.signal(signal.SIGTERM, lambda *_: _trigger_shutdown(proc_group))
+            proc_group.wait_any()
         return _shutdown(
             proc_group=proc_group,
             containers=containers,
@@ -1249,6 +1273,21 @@ def _collect_hook_opts(hooks: tuple[HookConfig, ...], opts: argparse.Namespace) 
             if hasattr(opts, attr):
                 out[arg.dest] = getattr(opts, attr)
     return out
+
+
+def _resolve_sticky_choice(opts: argparse.Namespace, config: RunSiteConfig) -> bool:
+    """Effective sticky-banner on/off.
+
+    Precedence: CLI flag (``--sticky-banner`` / ``--no-sticky-banner``)
+    wins; then ``[banner].sticky`` (``"auto"`` / ``"always"`` / ``"never"``);
+    the actual TTY check happens inside ``StickyRegion`` so passing ``True``
+    on a non-TTY stream still degrades gracefully to inline printing.
+    """
+
+    cli = getattr(opts, "sticky_banner", None)
+    if cli is not None:
+        return bool(cli)
+    return config.banner.sticky != "never"
 
 
 def _celery_active(config: RunSiteConfig, opts: argparse.Namespace) -> bool:

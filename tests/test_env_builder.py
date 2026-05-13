@@ -461,8 +461,7 @@ def test_allowed_hosts_user_renamed_via_env_mapping(tmp_path: Path) -> None:
 
     cfg_path = tmp_path / "runsite.toml"
     cfg_path.write_text(
-        'project_slug = "demo"\n[postgres]\n[redis]\n'
-        '[env]\nallowed_hosts = "MY_HOSTS"\n'
+        'project_slug = "demo"\n[postgres]\n[redis]\n[env]\nallowed_hosts = "MY_HOSTS"\n'
     )
     config = load_config(config_path=cfg_path, project_root=tmp_path)
     config = replace(config, django=replace(config.django, runserver_bind="0.0.0.0"))

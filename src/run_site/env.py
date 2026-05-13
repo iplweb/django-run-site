@@ -156,9 +156,7 @@ def build_subprocess_env(
     # Project-side mapping ([env]) — layered on top of default conventional
     # names so DATABASE_URL / REDIS_URL / DJANGO_SECRET_KEY get exported
     # even when the user did not configure them.
-    allowed_hosts = compute_allowed_hosts(
-        bind=config.django.runserver_bind, lan_hosts=lan_hosts
-    )
+    allowed_hosts = compute_allowed_hosts(bind=config.django.runserver_bind, lan_hosts=lan_hosts)
     project_values = _project_values(
         config, endpoints, secret_key=secret_key, allowed_hosts=allowed_hosts
     )

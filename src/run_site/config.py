@@ -194,6 +194,12 @@ class BannerConfig:
     title: str = "run-site is running"
     show_db_credentials: bool = True
     suggest_dev_helpers: bool = True
+    # Tri-state: ``"auto"`` (default) pins the banner to the top of the
+    # terminal when stdout is a real TTY and the banner fits; ``"always"``
+    # forces it on (useful with FORCE_COLOR); ``"never"`` keeps the legacy
+    # inline-print behavior. CLI flags ``--sticky-banner`` /
+    # ``--no-sticky-banner`` override this value per run.
+    sticky: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -832,10 +838,14 @@ def _build_hook(
 
 
 def _build_banner(raw: Mapping[str, Any]) -> BannerConfig:
+    sticky = _str(raw, "sticky", default="auto")
+    if sticky not in ("auto", "always", "never"):
+        raise ConfigError(f"[banner].sticky must be 'auto', 'always', or 'never', got {sticky!r}")
     return BannerConfig(
         title=_str(raw, "title", default="run-site is running"),
         show_db_credentials=_bool(raw, "show_db_credentials", default=True),
         suggest_dev_helpers=_bool(raw, "suggest_dev_helpers", default=True),
+        sticky=sticky,
     )
 
 
