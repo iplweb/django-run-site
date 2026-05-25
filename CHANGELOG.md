@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-05-25
+
+### Added
+
+- **Container and dump lifecycle messages during startup.** Previously,
+  the first thing the user saw after launching `run-site` was a long
+  silence — testcontainers booted Postgres and Redis, then `pg_restore`
+  replayed the dump, all with no visible output until `[migrate] running
+  migrations…` finally appeared. For multi-GB dumps that silence could
+  stretch past a minute.
+
+  Both phases now stream messages through the existing log multiplexer:
+
+  ```
+  [docker] postgres: starting image=postgres:16…
+  [docker] postgres: ready @ 127.0.0.1:54321 (3.4s)
+  [docker] redis: starting image=redis:7-alpine…
+  [docker] redis: ready @ 127.0.0.1:49153 (1.1s)
+  [dump] copying db-backup-20260428.pg_dump (412.7 MB) into container…
+  [dump] restoring db-backup-20260428.pg_dump via pg_restore (this may take a while)…
+  [migrate] running migrations…
+  ```
+
+  `--reuse` runs surface `reusing existing container <id12> @ host:port`
+  in place of the `starting…` / `ready…` pair.
+
+- New `progress` keyword argument on `start_containers()` and
+  `execute_post_start()` — `Callable[[stream, color, line], None]`
+  matching `mux.write`. Defaults to a no-op so library/test callers
+  keep the previous silent behavior.
+
+### Notes
+
+- Image pulls on first run still happen inside the testcontainers
+  launcher and remain silent — the `starting image=…` line precedes
+  any pull. Pre-pull-with-progress would require dropping below
+  testcontainers into the raw Docker SDK; not in this release.
+- `pg_restore -v` per-table output is still captured by
+  `subprocess.run`; you see start/end progress lines but not the
+  per-object stream.
+
 ## [0.8.0] — 2026-05-12
 
 ### Fixed
