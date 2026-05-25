@@ -17,13 +17,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from run_site.config import RunSiteConfig
 from run_site.errors import DumpError
+
+# (stream_name, line) — color is fixed at the call site so callers only
+# need a 2-arg shim around ``mux.write``.
+DumpProgressCallback = Callable[[str, str], None]
 
 
 class DumpFormat(Enum):
@@ -241,9 +245,16 @@ def execute_post_start(
     pg_port: int,
     container_id: str | None,
     env_overlay: dict[str, str] | None = None,
+    progress: DumpProgressCallback | None = None,
 ) -> None:
     """Run the post-start restore commands. Fails fast on first error
-    when ``config.dump.fail_fast=True``."""
+    when ``config.dump.fail_fast=True``.
+
+    ``progress`` is invoked with ``(stream, line)`` once before each
+    sub-command — e.g. ``("dump", "[dump] restoring snapshot.pg_dump (42 MB)
+    via pg_restore…")`` — so callers can render lifecycle messages while
+    the (otherwise silent) restore is in flight.
+    """
 
     argvs = build_post_start_argv(
         plan=plan,
@@ -255,6 +266,8 @@ def execute_post_start(
     env = dict(os.environ)
     env.update(env_overlay or {})
     env.setdefault("PGPASSWORD", config.postgres.password)
+    emit = progress or _noop_dump_progress
+    size_label = _format_size(plan.path)
 
     for argv in argvs:
         if argv[0] == "__pipe__":
@@ -264,8 +277,14 @@ def execute_post_start(
             psql_idx = next(i for i, t in enumerate(tokens) if t.endswith("psql"))
             left = tokens[:psql_idx]
             right = tokens[psql_idx:]
+            emit(
+                "dump",
+                f"[dump] loading {plan.path.name} ({size_label}) via "
+                f"{Path(left[0]).name} | {Path(right[0]).name}…",
+            )
             _run_pipe(left, right, env=env, fail_fast=config.dump.fail_fast)
         else:
+            emit("dump", _describe_step(argv, plan=plan, size_label=size_label))
             _run(list(argv), env=env, fail_fast=config.dump.fail_fast)
 
 
@@ -306,6 +325,53 @@ def _run_pipe(
             f"left argv: {list(left)}\nright argv: {list(right)}\n"
             f"stdout:\n{right_proc.stdout}\nstderr:\n{right_proc.stderr}"
         )
+
+
+def _noop_dump_progress(stream: str, line: str) -> None:
+    """Default progress sink — discards messages so callers that don't
+    care about progress (library use, tests) keep the old silent behavior."""
+
+
+def _format_size(path: Path) -> str:
+    """Render *path*'s size as a human-readable label (e.g. ``"42.3 MB"``).
+    Returns ``"unknown size"`` if the file is missing — we never want a
+    progress message to crash the restore."""
+
+    try:
+        raw = path.stat().st_size
+    except OSError:
+        return "unknown size"
+    n: float = float(raw)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _describe_step(argv: Sequence[str], *, plan: DumpPlan, size_label: str) -> str:
+    """Turn a restore argv into a one-line progress message.
+
+    The argv shape comes from :func:`build_post_start_argv`, so we look at
+    the tool name to decide the verb (``docker cp`` → copy, ``pg_restore``
+    → restore, ``psql`` → load). Anything else falls back to a generic
+    ``[dump] running …`` line so future argv shapes don't go silent.
+    """
+
+    head = Path(argv[0]).name
+    name = plan.path.name
+    if head == "docker" and len(argv) > 1 and argv[1] == "cp":
+        return f"[dump] copying {name} ({size_label}) into container…"
+    if head == "docker" and len(argv) > 1 and argv[1] == "exec":
+        # ``docker exec … pg_restore …`` — surface the inner tool, not docker.
+        if "pg_restore" in argv:
+            return f"[dump] restoring {name} via pg_restore (this may take a while)…"
+        return f"[dump] running {' '.join(argv[:4])}…"
+    if head.endswith("psql"):
+        return f"[dump] loading {name} ({size_label}) via psql…"
+    if head.endswith("pg_restore"):
+        return f"[dump] restoring {name} ({size_label}) via pg_restore…"
+    return f"[dump] running {head}…"
 
 
 def _require_tool(tool: str) -> str:

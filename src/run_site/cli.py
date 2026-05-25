@@ -570,7 +570,12 @@ def _execute_run(
             if warning is not None:
                 mux.write("sqlite", "yellow", f"[sqlite] WARNING: {warning}")
 
-    containers = start_containers(config=config, reuse=opts.reuse, init_script=init_script)
+    containers = start_containers(
+        config=config,
+        reuse=opts.reuse,
+        init_script=init_script,
+        progress=mux.write,
+    )
     runserver_port = opts.port or find_free_port(config.django.runserver_bind)
     autologin_token = generate_autologin_token()
     # SECRET_KEY: read-or-generate-and-persist under .run-site/secret_key.
@@ -699,6 +704,7 @@ def _execute_run(
                 pg_host=containers.pg_host,
                 pg_port=containers.pg_port,
                 container_id=containers.pg_container_id,
+                progress=lambda stream, line: mux.write(stream, "yellow", line),
             )
         elif plan is not None and plan.strategy == "skip":
             mux.write("dump", "yellow", f"[dump] skipped: {plan.reason}")
