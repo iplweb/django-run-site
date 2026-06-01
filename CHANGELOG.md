@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Restore `pg_dump` directory-format dumps packaged as `.tar.gz`/`.tgz`.**
+  A directory dump (`pg_dump -Fd`) that was `tar | gzip`-ed for transport is
+  now unwrapped to a temp directory and restored via the container's
+  `pg_restore` (which auto-detects the archive format). Previously such a
+  file was misread as gzipped SQL and piped into `psql`, failing with
+  `Piped restore failed: left=-13 right=3`.
+
+### Changed
+
+- **Dump format is detected by content (magic bytes), not just the filename.**
+  `detect_format` now inspects the leading bytes — gzip wrapper, `PGDMP`
+  custom-dump magic, or a `tar` header — and falls back to the extension only
+  when the content is inconclusive. This fixes archives with non-canonical
+  names (e.g. `*.tar.gz`, `backup.bin`) being routed to the wrong loader. The
+  three `pg_restore` archive formats (custom / directory / tar) are no longer
+  distinguished internally; `pg_restore` identifies the specific format.
+
 ## [0.15.0] — 2026-05-25
 
 ### Added
