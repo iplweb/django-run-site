@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`RuntimeError: reentrant call inside <_io.BufferedWriter>` on terminal
+  resize.** The sticky banner's `SIGWINCH` handler redrew the banner by
+  writing ANSI sequences directly to stdout. Signal handlers run
+  synchronously on the main thread, so a second resize landing mid-write
+  re-entered the in-progress `BufferedWriter` write and crashed `run-site`
+  (an `RLock` does not help — the same thread already holds it). The handler
+  now performs **no I/O**: it only flags a redraw via an `Event`, and a
+  dedicated `sticky-redraw` worker thread does the actual redraw off the
+  signal/main thread, where a concurrent write merely blocks on the stream
+  lock instead of re-entering it. Bursts of resize events coalesce.
+
 ## [0.16.0] — 2026-06-01
 
 ### Added
