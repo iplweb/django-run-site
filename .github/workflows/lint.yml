@@ -9,30 +9,29 @@ on:
 permissions:
   contents: read
 
+# Single source of truth: CI runs the exact same pre-commit hooks a developer
+# runs locally (`uv run pre-commit run --all-files`). Same uv.lock -> same mypy;
+# same pinned ruff-pre-commit rev -> same ruff. They cannot drift apart.
 jobs:
-  ruff:
-    name: ruff
+  pre-commit:
+    name: pre-commit (ruff + ruff-format + mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-      - run: pip install ruff
-      - run: ruff check .
-      - run: ruff format --check .
 
-  mypy:
-    name: mypy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.13"
-          cache: pip
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-      - run: mypy src/run_site
+          enable-cache: true
+
+      - name: Install dev dependencies (locked)
+        run: uv sync --all-extras
+
+      - name: Cache pre-commit hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Run the same hooks developers run locally
+        run: uv run pre-commit run --all-files --show-diff-on-failure

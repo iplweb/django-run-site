@@ -19,23 +19,23 @@ def _strip_ansi(s: str) -> str:
 
 
 def _make_info(**overrides) -> BannerInfo:
-    base: dict = dict(
-        appserver_url="http://localhost:8123/",
-        admin_url="http://localhost:8123/admin/",
-        pg_host="127.0.0.1",
-        pg_port=54321,
-        redis_host="127.0.0.1",
-        redis_port=16379,
-        celery_status="disabled",
-        dump_label=None,
-        source_kind=None,
-        source_url=None,
-        source_ref=None,
-        source_checkout=None,
-        dev_helpers_installed=True,
-        sidecar_path=None,
-        superuser={"username": "admin", "email": "admin@example.com", "created": True},
-    )
+    base: dict = {
+        "appserver_url": "http://localhost:8123/",
+        "admin_url": "http://localhost:8123/admin/",
+        "pg_host": "127.0.0.1",
+        "pg_port": 54321,
+        "redis_host": "127.0.0.1",
+        "redis_port": 16379,
+        "celery_status": "disabled",
+        "dump_label": None,
+        "source_kind": None,
+        "source_url": None,
+        "source_ref": None,
+        "source_checkout": None,
+        "dev_helpers_installed": True,
+        "sidecar_path": None,
+        "superuser": {"username": "admin", "email": "admin@example.com", "created": True},
+    }
     base.update(overrides)
     return BannerInfo(**base)
 
