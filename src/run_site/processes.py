@@ -139,6 +139,11 @@ class ManagedProcess:
     color: str
     popen: subprocess.Popen[bytes] | None = None
     returncode: int | None = None
+    # Set by the process's watch thread once it has been reaped. This is the
+    # single source of truth for "has this process exited?" — terminate_all
+    # waits on it instead of calling Popen.wait itself, so the two never race
+    # on the same child.
+    exited: threading.Event = field(default_factory=threading.Event)
 
     def is_running(self) -> bool:
         return self.popen is not None and self.popen.poll() is None
@@ -148,8 +153,10 @@ class ProcessGroup:
     """Track the lifecycle of multiple ManagedProcesses with mux output.
 
     Use :meth:`spawn` to start a process and attach it to the muxer; use
-    :meth:`wait_any` to block until one of them exits; use :meth:`terminate_all`
-    to fan out SIGTERM (then SIGKILL after a grace period).
+    :meth:`wait_any` to block until one of them exits *or* shutdown is
+    requested; use :meth:`request_shutdown` (Ctrl+C) to unblock it and
+    :meth:`terminate_all` to fan out SIGTERM (then SIGKILL after a grace
+    period, or immediately on a forced shutdown).
     """
 
     GRACE_SECONDS = 5.0
@@ -157,7 +164,13 @@ class ProcessGroup:
     def __init__(self, mux: LogMultiplexer) -> None:
         self._mux = mux
         self._procs: list[ManagedProcess] = []
-        self._exited = threading.Event()
+        # Set whenever a managed process exits *or* shutdown is requested —
+        # either condition should wake the main loop parked in wait_any().
+        self._wake = threading.Event()
+        # Tracks Ctrl+C presses: the first requests a graceful stop, a second
+        # ("the user is impatient") forces an immediate SIGKILL.
+        self._shutdown_requested = threading.Event()
+        self._force = threading.Event()
 
     def spawn(
         self,
@@ -181,7 +194,11 @@ class ProcessGroup:
             env=dict(env),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            bufsize=1,
+            # Default buffering: the pipe is binary (the mux does its own
+            # line-based text decoding), so bufsize=1 here only earns a
+            # "line buffering isn't supported in binary mode" RuntimeWarning
+            # for no behavioural gain.
+            bufsize=-1,
             preexec_fn=os.setsid if sys.platform != "win32" else None,
         )
         spec = self._mux.stream(name, color)
@@ -192,12 +209,15 @@ class ProcessGroup:
         return proc
 
     def _watch_one(self, proc: ManagedProcess) -> None:
-        if proc.popen is None:
-            return
         try:
-            proc.returncode = proc.popen.wait()
+            if proc.popen is not None:
+                proc.returncode = proc.popen.wait()
         finally:
-            self._exited.set()
+            # This is the ONLY place Popen.wait is called for a managed
+            # process, so terminate_all can rely on `exited` without ever
+            # touching Popen.wait itself.
+            proc.exited.set()
+            self._wake.set()
 
     def all(self) -> list[ManagedProcess]:
         return list(self._procs)
@@ -207,49 +227,80 @@ class ProcessGroup:
 
         return self._procs[0] if self._procs else None
 
-    def wait_any(self) -> ManagedProcess | None:
-        """Block until at least one managed process exits.
+    def request_shutdown(self) -> None:
+        """Ask the group to shut down — called from the Ctrl+C handler.
 
-        Returns the first exited process, or None if interrupted.
+        Safe to invoke from a signal handler: it only sets events and
+        returns, doing no blocking work and reaping no children. The first
+        call requests a graceful stop and unblocks :meth:`wait_any`; a second
+        call (an impatient second Ctrl+C) escalates :meth:`terminate_all`
+        straight to SIGKILL.
         """
 
-        self._exited.wait()
+        if self._shutdown_requested.is_set():
+            self._force.set()
+        self._shutdown_requested.set()
+        self._wake.set()
+
+    def wait_any(self) -> ManagedProcess | None:
+        """Block until a managed process exits or shutdown is requested.
+
+        Returns the first exited process, or None if it was a shutdown
+        request (or nothing has exited yet) that woke us.
+        """
+
+        self._wake.wait()
         for proc in self._procs:
-            if proc.popen is not None and proc.popen.poll() is not None:
+            if proc.exited.is_set():
                 return proc
         return None
 
     def terminate_all(self) -> None:
-        """Send SIGTERM to all process groups, then SIGKILL after grace."""
+        """Stop every managed process: SIGTERM, then SIGKILL after the grace
+        period — or immediately if a forced shutdown was requested.
 
-        deadline = time.monotonic() + self.GRACE_SECONDS
+        Coordination happens purely through each process's ``exited`` event
+        (set by its watch thread). This method never calls ``Popen.wait``, so
+        it cannot race the watch threads or block indefinitely on a child
+        that ignores SIGTERM: the grace window is honoured by event waits and
+        always escalates to the uncatchable SIGKILL.
+        """
+
+        for proc in self._procs:
+            self._signal(proc, signal.SIGTERM)
+        deadline = time.monotonic() + (0.0 if self._force.is_set() else self.GRACE_SECONDS)
         for proc in self._procs:
             if proc.popen is None:
                 continue
-            try:
-                if sys.platform == "win32":
+            # Wait out the grace window in short slices so a second Ctrl+C
+            # (which sets `_force`) cuts it short.
+            while not proc.exited.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._force.is_set():
+                    break
+                proc.exited.wait(timeout=min(remaining, 0.1))
+            if not proc.exited.is_set():
+                self._signal(proc, signal.SIGKILL)
+                proc.exited.wait()
+
+    def _signal(self, proc: ManagedProcess, sig: int) -> None:
+        """Send *sig* to a process's whole group, tolerating an already-gone
+        process (its watch thread will have set ``exited`` already)."""
+
+        if proc.popen is None:
+            return
+        try:
+            if sys.platform == "win32":
+                # No process groups / SIGKILL on Windows — map onto Popen.
+                if sig == signal.SIGTERM:
                     proc.popen.terminate()
                 else:
-                    os.killpg(os.getpgid(proc.popen.pid), signal.SIGTERM)
-            except (ProcessLookupError, OSError) as exc:
-                if exc.errno not in (errno.ESRCH, errno.EPERM):
-                    raise
-        for proc in self._procs:
-            if proc.popen is None:
-                continue
-            remaining = max(deadline - time.monotonic(), 0.1)
-            try:
-                proc.popen.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                try:
-                    if sys.platform == "win32":
-                        proc.popen.kill()
-                    else:
-                        os.killpg(os.getpgid(proc.popen.pid), signal.SIGKILL)
-                except (ProcessLookupError, OSError) as exc:
-                    if exc.errno not in (errno.ESRCH, errno.EPERM):
-                        raise
-                proc.popen.wait()
+                    proc.popen.kill()
+            else:
+                os.killpg(os.getpgid(proc.popen.pid), sig)
+        except (ProcessLookupError, OSError) as exc:
+            if getattr(exc, "errno", None) not in (errno.ESRCH, errno.EPERM):
+                raise
 
 
 def wait_for_http(

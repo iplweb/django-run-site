@@ -32,7 +32,7 @@ project-facing configuration. A developer can:
 
 ```sh
 source .run-site-env.sh
-python manage.py dbshell      # uses DATABASE_URL / DJANGO_* 
+python manage.py dbshell      # uses DATABASE_URL / DJANGO_*
 psql                          # uses PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD
 ```
 

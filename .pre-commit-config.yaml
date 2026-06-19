@@ -22,9 +22,25 @@ repos:
       - id: django-upgrade
         args: [--target-version, "5.2"]
 
+  # Keep `rev` in lockstep with the ruff range in pyproject.toml [dev].
+  # CI runs these same hooks (see .github/workflows/lint.yml), so whatever
+  # passes here locally passes CI — and vice versa.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.15.18
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # Type-checking runs locally too, so a mypy regression is caught before
+  # push instead of only in CI. We shell out through `uv run` so the hook
+  # finds mypy + the project's dependencies whether it's triggered by the
+  # bare git hook (plain PATH) or by `uv run pre-commit` in CI.
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (src/run_site)
+        entry: uv run mypy src/run_site
+        language: system
+        pass_filenames: false
+        always_run: true
