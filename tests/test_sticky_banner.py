@@ -50,9 +50,7 @@ class _ReentrancyGuardTTY(_FakeTTY):
 
     def write(self, s: str) -> int:  # type: ignore[override]
         if self._in_write:
-            raise RuntimeError(
-                "reentrant call inside <_io.BufferedWriter name='<stdout>'>"
-            )
+            raise RuntimeError("reentrant call inside <_io.BufferedWriter name='<stdout>'>")
         self._in_write = True
         try:
             hook, self._mid_write_hook = self._mid_write_hook, None
