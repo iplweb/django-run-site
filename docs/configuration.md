@@ -193,7 +193,7 @@ fail_fast = true
 |---|---|
 | `auto` (default) | Plain `.sql` + fresh container → init-script; otherwise → post-start; reused container → skip with warning. |
 | `init-script` | Force PG to load the dump from `/docker-entrypoint-initdb.d/`. Only `.sql`, only fresh containers. |
-| `post-start` | Always restore via `psql` / `pg_restore` after PG comes up. Works for `.sql`, `.sql.gz`, `.dump`/`.pgdump`. |
+| `post-start` | Always restore via `psql` / `pg_restore` after PG comes up. Works for `.sql`, `.sql.gz`, `.dump`/`.pgdump`, and `pg_dump` directory dumps packaged as `.tar.gz`/`.tgz`. |
 
 `restore_jobs = "auto"` becomes `min(8, os.cpu_count())`.
 

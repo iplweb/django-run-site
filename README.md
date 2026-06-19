@@ -42,9 +42,10 @@ stack:
 
 - **PostgreSQL** + **Redis** testcontainers on random (or stable, with
   `--reuse`) ports.
-- Optional dump load (`.sql`, `.sql.gz`, `.dump`/`.pgdump`) using the right
-  strategy (init-script for fresh PG, `psql`/`pg_restore` post-start
-  otherwise).
+- Optional dump load (`.sql`, `.sql.gz`, `.dump`/`.pgdump`, or a directory
+  dump packaged as `.tar.gz`/`.tgz`) using the right strategy (init-script
+  for fresh PG, `psql`/`pg_restore` post-start otherwise). Format is detected
+  by content, not just the file extension.
 - Local `migrate`, **dev superuser** creation/refresh, `runserver`, Celery
   worker/beat, and any extra processes you declare — multiplexed into one
   terminal with colored log prefixes.
@@ -295,8 +296,11 @@ between runs so you don't reload the dump each time. The banner's
 ### Restore a PostgreSQL dump before the site starts
 
 Dump restoration is a **first-class feature** — not a hook. Point
-`[dump]` at any `.sql`, `.sql.gz`, `.dump`, or `.pgdump` file and
-`run-site` picks the right loader strategy automatically:
+`[dump]` at any `.sql`, `.sql.gz`, `.dump`/`.pgdump`, or a `pg_dump`
+directory dump packaged as `.tar.gz`/`.tgz`, and `run-site` picks the
+right loader strategy automatically (binary archives — custom, directory,
+or tar — are restored with the container's `pg_restore`, which auto-detects
+the format; run-site only peels any outer `gzip`/`tar` wrapper):
 
 ```toml
 [dump]

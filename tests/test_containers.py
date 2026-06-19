@@ -321,6 +321,106 @@ def test_start_containers_skips_both(minimal_config) -> None:
     assert containers.redis_container_id is None
 
 
+def test_start_containers_emits_progress(minimal_config) -> None:
+    """The CLI should be able to surface container lifecycle messages by
+    passing ``progress=mux.write``. Verify start/ready pairs are emitted
+    for both services with hostname/port in the ready line so the user
+    sees the same endpoint info the banner will later show."""
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    events: list[tuple[str, str, str]] = []
+    start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=lambda name, color, line: events.append((name, color, line)),
+    )
+    lines = [line for _, _, line in events]
+    assert any("postgres" in line and "starting" in line for line in lines), lines
+    assert any("postgres" in line and "ready" in line and "54321" in line for line in lines), lines
+    assert any("redis" in line and "starting" in line for line in lines), lines
+    assert any("redis" in line and "ready" in line and "49153" in line for line in lines), lines
+
+
+def test_start_containers_progress_includes_image(minimal_config) -> None:
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    events: list[tuple[str, str, str]] = []
+    start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=lambda name, color, line: events.append((name, color, line)),
+    )
+    lines = [line for _, _, line in events]
+    assert any(minimal_config.postgres.image in line for line in lines), lines
+    assert any(minimal_config.redis.image in line for line in lines), lines
+
+
+def test_start_containers_emits_progress_when_reusing(minimal_config) -> None:
+    pg = FakePgLauncher(found=("existing-pg-cid-abcdefghij", "127.0.0.1", 11111))
+    redis = FakeRedisLauncher(found=("existing-redis-cid-zyxwvutsr", "127.0.0.1", 22222))
+    events: list[tuple[str, str, str]] = []
+    start_containers(
+        config=minimal_config,
+        reuse=True,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=lambda name, color, line: events.append((name, color, line)),
+    )
+    lines = [line for _, _, line in events]
+    assert any("postgres" in line and "reusing" in line for line in lines), lines
+    assert any("redis" in line and "reusing" in line for line in lines), lines
+    # No "starting" line for either — we attached, didn't start.
+    assert not any("postgres" in line and "starting" in line for line in lines), lines
+    assert not any("redis" in line and "starting" in line for line in lines), lines
+
+
+def test_start_containers_progress_skipped_for_disabled_service(minimal_config) -> None:
+    """``[redis].enabled = false`` means no redis progress messages.
+    Only services that actually start should appear in the progress stream."""
+
+    from dataclasses import replace
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    config = replace(minimal_config, redis=replace(minimal_config.redis, enabled=False))
+    events: list[tuple[str, str, str]] = []
+    start_containers(
+        config=config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=lambda name, color, line: events.append((name, color, line)),
+    )
+    lines = [line for _, _, line in events]
+    assert any("postgres" in line for line in lines), lines
+    assert not any("redis" in line for line in lines), lines
+
+
+def test_start_containers_works_without_progress(minimal_config) -> None:
+    """Backward compatibility: omitting ``progress`` must not error."""
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    containers = start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    assert containers.pg_created is True
+    assert containers.redis_created is True
+
+
 def test_stop_containers_noop_when_ids_are_none() -> None:
     """When the run started with both services disabled, stop_containers
     is called with all-``None`` ids; it must not call into the launchers."""
