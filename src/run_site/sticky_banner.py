@@ -127,6 +127,16 @@ class StickyRegion(AbstractContextManager["StickyRegion"]):
         # SIGWINCH handler can only be installed from the main thread; we
         # capture the prior handler so we can restore it on exit.
         self._prev_winch: signal._HANDLER | None = None  # type: ignore[name-defined]
+        # Resize redraws run on a dedicated worker thread, NOT in the signal
+        # handler. A signal handler runs synchronously on the main thread and
+        # can interrupt an in-progress write to stdout; doing buffered I/O
+        # there re-enters the BufferedWriter and raises "reentrant call inside
+        # <_io.BufferedWriter>". So ``_on_resize`` only sets an Event and the
+        # worker performs the actual redraw off the signal/main thread, where
+        # at worst it blocks on the buffer lock (which is safe).
+        self._resize_requested = threading.Event()
+        self._redraw_stop = False
+        self._redraw_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Public surface
@@ -236,19 +246,57 @@ class StickyRegion(AbstractContextManager["StickyRegion"]):
             self._prev_winch = signal.signal(signal.SIGWINCH, self._on_resize)
         except (ValueError, OSError):
             self._prev_winch = None
+            return
+        # Start the off-signal redraw worker now that the handler is live.
+        self._redraw_stop = False
+        self._resize_requested.clear()
+        self._redraw_thread = threading.Thread(
+            target=self._redraw_loop,
+            name="sticky-redraw",
+            daemon=True,
+        )
+        self._redraw_thread.start()
 
     def _uninstall_winch_handler(self) -> None:
-        if self._prev_winch is None or not hasattr(signal, "SIGWINCH"):
-            return
-        with suppress(ValueError, OSError):
-            signal.signal(signal.SIGWINCH, self._prev_winch)
-        self._prev_winch = None
+        if self._prev_winch is not None and hasattr(signal, "SIGWINCH"):
+            with suppress(ValueError, OSError):
+                signal.signal(signal.SIGWINCH, self._prev_winch)
+            self._prev_winch = None
+        # Stop the redraw worker and wait for it to drain. Idempotent: safe
+        # even when the handler/thread were never installed. Joining here
+        # guarantees no redraw write races the teardown that follows in
+        # ``__exit__``.
+        self._redraw_stop = True
+        self._resize_requested.set()  # wake the loop so it observes the stop
+        thread = self._redraw_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._redraw_thread = None
 
     def _on_resize(self, signum: int, frame: FrameType | None) -> None:
         del signum, frame
-        if not self._installed:
-            return
+        # Async-signal context: do the absolute minimum. NO I/O here — a
+        # buffered write from a signal handler can re-enter an in-progress
+        # write and raise "reentrant call inside <_io.BufferedWriter>". Just
+        # flag a redraw; the worker thread picks it up and coalesces bursts.
+        self._resize_requested.set()
+
+    def _redraw_loop(self) -> None:
+        """Worker thread: redraw the region whenever a resize is requested."""
+        while True:
+            self._resize_requested.wait()
+            if self._redraw_stop:
+                return
+            self._resize_requested.clear()
+            self._redraw_once()
+
+    def _redraw_once(self) -> None:
+        """Re-measure and re-install (or tear down) the region. Runs off the
+        signal handler, so its writes can never re-enter a main-thread write —
+        a concurrent write just blocks on the stream's own lock."""
         with self._lock:
+            if not self._installed:
+                return
             cols, rows = _terminal_size(self._stream)
             if not self._fits(rows):
                 # Window got too short — tear down rather than render a

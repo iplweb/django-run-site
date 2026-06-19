@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] — 2026-06-05
+
+### Fixed
+
+- **`RuntimeError: reentrant call inside <_io.BufferedWriter>` on terminal
+  resize.** The sticky banner's `SIGWINCH` handler redrew the banner by
+  writing ANSI sequences directly to stdout. Signal handlers run
+  synchronously on the main thread, so a second resize landing mid-write
+  re-entered the in-progress `BufferedWriter` write and crashed `run-site`
+  (an `RLock` does not help — the same thread already holds it). The handler
+  now performs **no I/O**: it only flags a redraw via an `Event`, and a
+  dedicated `sticky-redraw` worker thread does the actual redraw off the
+  signal/main thread, where a concurrent write merely blocks on the stream
+  lock instead of re-entering it. Bursts of resize events coalesce.
+
+## [0.16.0] — 2026-06-01
+
+### Added
+
+- **Restore `pg_dump` directory-format dumps packaged as `.tar.gz`/`.tgz`.**
+  A directory dump (`pg_dump -Fd`) that was `tar | gzip`-ed for transport is
+  now unwrapped to a temp directory and restored via the container's
+  `pg_restore` (which auto-detects the archive format). Previously such a
+  file was misread as gzipped SQL and piped into `psql`, failing with
+  `Piped restore failed: left=-13 right=3`.
+
+### Changed
+
+- **Dump format is detected by content (magic bytes), not just the filename.**
+  `detect_format` now inspects the leading bytes — gzip wrapper, `PGDMP`
+  custom-dump magic, or a `tar` header — and falls back to the extension only
+  when the content is inconclusive. This fixes archives with non-canonical
+  names (e.g. `*.tar.gz`, `backup.bin`) being routed to the wrong loader. The
+  three `pg_restore` archive formats (custom / directory / tar) are no longer
+  distinguished internally; `pg_restore` identifies the specific format.
+
+## [0.15.0] — 2026-05-25
+
+### Added
+
+- **Container and dump lifecycle messages during startup.** Previously,
+  the first thing the user saw after launching `run-site` was a long
+  silence — testcontainers booted Postgres and Redis, then `pg_restore`
+  replayed the dump, all with no visible output until `[migrate] running
+  migrations…` finally appeared. For multi-GB dumps that silence could
+  stretch past a minute.
+
+  Both phases now stream messages through the existing log multiplexer:
+
+  ```
+  [docker] postgres: starting image=postgres:16…
+  [docker] postgres: ready @ 127.0.0.1:54321 (3.4s)
+  [docker] redis: starting image=redis:7-alpine…
+  [docker] redis: ready @ 127.0.0.1:49153 (1.1s)
+  [dump] copying db-backup-20260428.pg_dump (412.7 MB) into container…
+  [dump] restoring db-backup-20260428.pg_dump via pg_restore (this may take a while)…
+  [migrate] running migrations…
+  ```
+
+  `--reuse` runs surface `reusing existing container <id12> @ host:port`
+  in place of the `starting…` / `ready…` pair.
+
+- New `progress` keyword argument on `start_containers()` and
+  `execute_post_start()` — `Callable[[stream, color, line], None]`
+  matching `mux.write`. Defaults to a no-op so library/test callers
+  keep the previous silent behavior.
+
+### Notes
+
+- Image pulls on first run still happen inside the testcontainers
+  launcher and remain silent — the `starting image=…` line precedes
+  any pull. Pre-pull-with-progress would require dropping below
+  testcontainers into the raw Docker SDK; not in this release.
+- `pg_restore -v` per-table output is still captured by
+  `subprocess.run`; you see start/end progress lines but not the
+  per-object stream.
+
 ## [0.8.0] — 2026-05-12
 
 ### Fixed

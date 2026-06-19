@@ -6,18 +6,31 @@ The actual restore is split between two phases of the run flow:
   *before* PG starts, so PG loads it as part of normal startup. Only works
   for plain ``.sql`` and only when the container is created fresh.
 - ``post-start``: file is loaded after PG is up, via ``psql`` (plain or
-  gzipped) or ``pg_restore`` (custom format).
+  gzipped SQL) or ``pg_restore`` (any binary archive — custom, directory,
+  or tar format, including directory dumps that were ``tar | gzip``-ed for
+  transport).
 
-The ``auto`` strategy picks the right one based on file extension and
+The ``auto`` strategy picks the right one based on the dump's content and
 whether the PG container was just created.
+
+Format detection inspects the file's *magic bytes*, not just its name:
+``pg_restore`` auto-detects the specific archive format itself, so run-site
+only needs to decide which engine to use (``psql`` vs ``pg_restore``) and
+how to peel any outer ``gzip``/``tar`` wrapper that ``pg_restore`` will not
+strip on its own.
 """
 
 from __future__ import annotations
 
+import gzip
+import logging
 import os
 import shutil
 import subprocess
-from collections.abc import Sequence
+import tarfile
+import tempfile
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -25,16 +38,31 @@ from pathlib import Path
 from run_site.config import RunSiteConfig
 from run_site.errors import DumpError
 
+logger = logging.getLogger(__name__)
+
+# (stream_name, line) — color is fixed at the call site so callers only
+# need a 2-arg shim around ``mux.write``.
+DumpProgressCallback = Callable[[str, str], None]
+
 
 class DumpFormat(Enum):
     PLAIN_SQL = "plain_sql"
     GZIPPED_SQL = "gzipped_sql"
-    CUSTOM = "custom"
+    # Any binary archive ``pg_restore`` can read — custom (``-Fc``),
+    # directory (``-Fd``), or tar (``-Ft``). run-site does not distinguish
+    # between them; ``pg_restore`` auto-detects the specific format.
+    PG_RESTORE = "pg_restore"
 
 
 SQL_SUFFIXES: tuple[str, ...] = (".sql",)
 GZIP_SUFFIXES: tuple[str, ...] = (".sql.gz", ".gz")
 CUSTOM_SUFFIXES: tuple[str, ...] = (".dump", ".pgdump", ".pg_dump")
+
+# Magic bytes used to classify a dump by content rather than by filename.
+_GZIP_MAGIC = b"\x1f\x8b"
+_PGDUMP_MAGIC = b"PGDMP"  # first bytes of a custom dump / a directory toc.dat
+_TAR_USTAR_OFFSET = 257  # POSIX/GNU tar puts "ustar" here in each header
+_SNIFF_BYTES = 512  # one tar header block — enough to see the ustar magic
 
 
 @dataclass(frozen=True)
@@ -47,22 +75,154 @@ class DumpPlan:
     reason: str | None = None
 
 
+def _read_head(path: Path, n: int) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read(n)
+
+
+def _gunzip_prefix(path: Path, n: int) -> bytes:
+    """Decompress up to *n* bytes from a gzip file. Returns ``b""`` when the
+    payload can't be read as gzip (truncated/garbage) — callers then treat
+    the gzip-magic file as gzipped SQL rather than crashing."""
+
+    try:
+        with gzip.open(path, "rb") as fh:
+            return fh.read(n)
+    except (OSError, EOFError):
+        # BadGzipFile is an OSError subclass; truncated test fixtures land
+        # here too. A gzip file we can't peek into is assumed to be SQL.
+        return b""
+
+
+def _looks_like_pg_restore_archive(buf: bytes) -> bool:
+    """True if *buf* is the start of a pg_dump archive (custom dump magic)
+    or a tar header (a tarred directory-format dump)."""
+
+    if buf[: len(_PGDUMP_MAGIC)] == _PGDUMP_MAGIC:
+        return True
+    return buf[_TAR_USTAR_OFFSET : _TAR_USTAR_OFFSET + 5] == b"ustar"
+
+
 def detect_format(path: Path) -> DumpFormat:
-    """Inspect *path* extension and return the dump format."""
+    """Classify *path* by content (magic bytes), falling back to the file
+    extension only when the content is inconclusive (e.g. empty fixtures).
+
+    ``pg_restore`` auto-detects the specific archive format, so every binary
+    archive — raw custom dump, or a directory dump that was ``tar``/``gzip``-ed
+    — maps to a single :attr:`DumpFormat.PG_RESTORE`.
+    """
+
+    head = _read_head(path, _SNIFF_BYTES)
+    if head[:2] == _GZIP_MAGIC:
+        inner = _gunzip_prefix(path, _SNIFF_BYTES)
+        if _looks_like_pg_restore_archive(inner):
+            return DumpFormat.PG_RESTORE
+        return DumpFormat.GZIPPED_SQL
+    if _looks_like_pg_restore_archive(head):
+        return DumpFormat.PG_RESTORE
+    return _format_from_extension(path)
+
+
+def _format_from_extension(path: Path) -> DumpFormat:
+    """Last-resort classification when content sniffing is inconclusive."""
 
     name = path.name.lower()
-    if name.endswith(GZIP_SUFFIXES) and name.endswith(".sql.gz"):
+    if name.endswith(".sql.gz"):
         return DumpFormat.GZIPPED_SQL
     if name.endswith(CUSTOM_SUFFIXES):
-        return DumpFormat.CUSTOM
+        return DumpFormat.PG_RESTORE
     if name.endswith(SQL_SUFFIXES):
         return DumpFormat.PLAIN_SQL
     if name.endswith(GZIP_SUFFIXES):
-        # ``foo.gz`` without ``.sql`` — treat as gzipped SQL pessimistically.
+        # ``foo.gz`` without gzip magic — corrupt, but treat as gzipped SQL
+        # pessimistically so the failure surfaces from psql, not detection.
         return DumpFormat.GZIPPED_SQL
     raise DumpError(
-        f"Unsupported dump format: {path.name}. "
-        "Expected .sql, .sql.gz, .dump, .pgdump, or .pg_dump."
+        f"Unsupported dump format: {path.name}. Expected .sql, .sql.gz, "
+        ".dump, .pgdump, .pg_dump, or a .tar.gz/.tgz pg_dump archive."
+    )
+
+
+@contextmanager
+def prepared_archive(path: Path) -> Iterator[Path]:
+    """Yield a filesystem path that ``pg_restore`` can read directly.
+
+    ``pg_restore`` reads a raw archive file (custom dump) or a directory
+    (directory dump) on its own, but it will not strip an outer ``gzip``/
+    ``tar`` wrapper. This unwraps that packaging:
+
+    - raw archive file (no gzip, no tar) → yielded unchanged (no temp dir);
+    - ``tar`` (optionally gzipped) wrapping a directory dump → extracted to a
+      temp dir; the directory holding ``toc.dat`` is yielded;
+    - gzipped single-file archive (e.g. a gzipped custom dump) → decompressed
+      to a temp file, which is yielded.
+
+    Any temp directory created is removed when the context exits.
+    """
+
+    head = _read_head(path, _SNIFF_BYTES)
+    gzipped = head[:2] == _GZIP_MAGIC
+    sample = _gunzip_prefix(path, _SNIFF_BYTES) if gzipped else head
+    is_tar = sample[_TAR_USTAR_OFFSET : _TAR_USTAR_OFFSET + 5] == b"ustar"
+
+    if not gzipped and not is_tar:
+        # Raw single-file archive — pg_restore reads it as-is.
+        yield path
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="run-site-dump-"))
+    try:
+        if is_tar:
+            _extract_tar(path, tmp, gzipped=gzipped)
+            yield _find_archive_dir(tmp, source_name=path.name)
+        else:
+            # Gzipped single-file archive → decompress to a plain file.
+            out = tmp / "dump"
+            with gzip.open(path, "rb") as src, open(out, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            yield out
+    finally:
+        try:
+            shutil.rmtree(tmp)
+        except OSError:
+            logger.warning("Failed to remove temp dump extraction dir %s", tmp, exc_info=True)
+
+
+def _extract_tar(path: Path, dest: Path, *, gzipped: bool) -> None:
+    # Literal modes (not a str variable) so the typed tarfile.open overloads
+    # match — "r:gz" decompresses, "r:" reads an uncompressed tar. Branch the
+    # ``with`` rather than the mode string to keep both mypy and ruff happy.
+    if gzipped:
+        with tarfile.open(path, "r:gz") as tar:
+            _extract_all(tar, dest)
+    else:
+        with tarfile.open(path, "r:") as tar:
+            _extract_all(tar, dest)
+
+
+def _extract_all(tar: tarfile.TarFile, dest: Path) -> None:
+    try:
+        # ``filter="data"`` (Python 3.12+, backported to recent patch
+        # releases) blocks path-traversal / device members during extract.
+        tar.extractall(dest, filter="data")
+    except TypeError:
+        # Older interpreters lack the ``filter`` keyword; fall back to a plain
+        # extract. Dumps are operator-supplied, trusted input.
+        tar.extractall(dest)
+
+
+def _find_archive_dir(root: Path, *, source_name: str) -> Path:
+    """Return the directory under *root* that directly contains ``toc.dat``.
+
+    Directory dumps are typically tarred under a single top-level folder, so
+    the ``toc.dat`` lives one level down; search recursively to be robust.
+    """
+
+    for toc in root.rglob("toc.dat"):
+        return toc.parent
+    raise DumpError(
+        f"No pg_dump archive found inside {source_name}: "
+        "expected a directory-format dump containing toc.dat."
     )
 
 
@@ -150,12 +310,17 @@ def build_post_start_argv(
     pg_host: str,
     pg_port: int,
     container_id: str | None,
+    restore_source: Path | None = None,
 ) -> list[Sequence[str]]:
     """Return a list of argv tuples to execute, in order.
 
     For plain/gzipped dumps the only argv is ``psql`` (with ``gunzip`` piped
-    via shell). For custom dumps we ``docker cp`` the file into the
+    via shell). For ``pg_restore`` archives we ``docker cp`` the dump into the
     container and then ``docker exec pg_restore`` — two argv tuples.
+
+    ``restore_source`` is the unwrapped path to copy into the container (a
+    file or a directory produced by :func:`prepared_archive`); it defaults to
+    ``plan.path`` for archives that need no unwrapping.
     """
 
     base_env_args = [
@@ -199,16 +364,17 @@ def build_post_start_argv(
             )
         ]
 
-    if plan.format is DumpFormat.CUSTOM:
+    if plan.format is DumpFormat.PG_RESTORE:
         if container_id is None:
             raise DumpError(
-                "Custom-format dumps require a known container id "
+                "pg_restore-format dumps require a known container id "
                 "(docker cp + pg_restore inside the container)."
             )
         docker = _require_tool("docker")
         jobs = resolve_restore_jobs(config.dump.restore_jobs)
+        source = restore_source if restore_source is not None else plan.path
         return [
-            (docker, "cp", str(plan.path), f"{container_id}:/tmp/dump"),
+            (docker, "cp", str(source), f"{container_id}:/tmp/dump"),
             (
                 docker,
                 "exec",
@@ -241,9 +407,37 @@ def execute_post_start(
     pg_port: int,
     container_id: str | None,
     env_overlay: dict[str, str] | None = None,
+    progress: DumpProgressCallback | None = None,
 ) -> None:
     """Run the post-start restore commands. Fails fast on first error
-    when ``config.dump.fail_fast=True``."""
+    when ``config.dump.fail_fast=True``.
+
+    ``progress`` is invoked with ``(stream, line)`` once before each
+    sub-command — e.g. ``("dump", "[dump] restoring snapshot.pg_dump (42 MB)
+    via pg_restore…")`` — so callers can render lifecycle messages while
+    the (otherwise silent) restore is in flight.
+    """
+
+    env = dict(os.environ)
+    env.update(env_overlay or {})
+    env.setdefault("PGPASSWORD", config.postgres.password)
+    emit = progress or _noop_dump_progress
+    size_label = _format_size(plan.path)
+
+    if plan.format is DumpFormat.PG_RESTORE:
+        # Peel any outer gzip/tar wrapper to a path pg_restore can read; the
+        # temp extraction (if any) lives only for the duration of the restore.
+        with prepared_archive(plan.path) as source:
+            argvs = build_post_start_argv(
+                plan=plan,
+                config=config,
+                pg_host=pg_host,
+                pg_port=pg_port,
+                container_id=container_id,
+                restore_source=source,
+            )
+            _run_argvs(argvs, env=env, emit=emit, plan=plan, size_label=size_label, config=config)
+        return
 
     argvs = build_post_start_argv(
         plan=plan,
@@ -252,10 +446,18 @@ def execute_post_start(
         pg_port=pg_port,
         container_id=container_id,
     )
-    env = dict(os.environ)
-    env.update(env_overlay or {})
-    env.setdefault("PGPASSWORD", config.postgres.password)
+    _run_argvs(argvs, env=env, emit=emit, plan=plan, size_label=size_label, config=config)
 
+
+def _run_argvs(
+    argvs: list[Sequence[str]],
+    *,
+    env: dict[str, str],
+    emit: DumpProgressCallback,
+    plan: DumpPlan,
+    size_label: str,
+    config: RunSiteConfig,
+) -> None:
     for argv in argvs:
         if argv[0] == "__pipe__":
             # ("__pipe__", *left_argv, *right_argv) — encoded as marker plus
@@ -264,8 +466,14 @@ def execute_post_start(
             psql_idx = next(i for i, t in enumerate(tokens) if t.endswith("psql"))
             left = tokens[:psql_idx]
             right = tokens[psql_idx:]
+            emit(
+                "dump",
+                f"[dump] loading {plan.path.name} ({size_label}) via "
+                f"{Path(left[0]).name} | {Path(right[0]).name}…",
+            )
             _run_pipe(left, right, env=env, fail_fast=config.dump.fail_fast)
         else:
+            emit("dump", _describe_step(argv, plan=plan, size_label=size_label))
             _run(list(argv), env=env, fail_fast=config.dump.fail_fast)
 
 
@@ -306,6 +514,53 @@ def _run_pipe(
             f"left argv: {list(left)}\nright argv: {list(right)}\n"
             f"stdout:\n{right_proc.stdout}\nstderr:\n{right_proc.stderr}"
         )
+
+
+def _noop_dump_progress(stream: str, line: str) -> None:
+    """Default progress sink — discards messages so callers that don't
+    care about progress (library use, tests) keep the old silent behavior."""
+
+
+def _format_size(path: Path) -> str:
+    """Render *path*'s size as a human-readable label (e.g. ``"42.3 MB"``).
+    Returns ``"unknown size"`` if the file is missing — we never want a
+    progress message to crash the restore."""
+
+    try:
+        raw = path.stat().st_size
+    except OSError:
+        return "unknown size"
+    n: float = float(raw)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _describe_step(argv: Sequence[str], *, plan: DumpPlan, size_label: str) -> str:
+    """Turn a restore argv into a one-line progress message.
+
+    The argv shape comes from :func:`build_post_start_argv`, so we look at
+    the tool name to decide the verb (``docker cp`` → copy, ``pg_restore``
+    → restore, ``psql`` → load). Anything else falls back to a generic
+    ``[dump] running …`` line so future argv shapes don't go silent.
+    """
+
+    head = Path(argv[0]).name
+    name = plan.path.name
+    if head == "docker" and len(argv) > 1 and argv[1] == "cp":
+        return f"[dump] copying {name} ({size_label}) into container…"
+    if head == "docker" and len(argv) > 1 and argv[1] == "exec":
+        # ``docker exec … pg_restore …`` — surface the inner tool, not docker.
+        if "pg_restore" in argv:
+            return f"[dump] restoring {name} via pg_restore (this may take a while)…"
+        return f"[dump] running {' '.join(argv[:4])}…"
+    if head.endswith("psql"):
+        return f"[dump] loading {name} ({size_label}) via psql…"
+    if head.endswith("pg_restore"):
+        return f"[dump] restoring {name} ({size_label}) via pg_restore…"
+    return f"[dump] running {head}…"
 
 
 def _require_tool(tool: str) -> str:

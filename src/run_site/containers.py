@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,15 @@ if TYPE_CHECKING:  # heavy imports only when types are checked
     from docker.models.containers import Container
 
 logger = logging.getLogger(__name__)
+
+# (stream_name, color, line) — matches LogMultiplexer.write so callers can
+# pass ``mux.write`` directly. ``None`` disables progress messages.
+ProgressCallback = Callable[[str, str, str], None]
+
+# Stream name + color used for container lifecycle messages. Kept in one
+# place so the banner / tests / wiring all agree on the visual identity.
+_DOCKER_STREAM = "docker"
+_DOCKER_COLOR = "blue"
 
 
 @dataclass(frozen=True)
@@ -240,16 +250,23 @@ def start_containers(
     init_script: Path | None,
     pg_launcher: PostgresLauncher | None = None,
     redis_launcher: RedisLauncher | None = None,
+    progress: ProgressCallback | None = None,
 ) -> RunSiteContainers:
     """Start PG and Redis (or attach to existing if ``reuse=True``).
 
     A service is skipped entirely when its config has ``enabled = false``
     — no image is pulled, no container is started, and the corresponding
     fields on :class:`RunSiteContainers` are returned as ``None``.
+
+    ``progress`` is invoked with ``(stream, color, line)`` for each
+    container lifecycle event — ``starting…`` / ``ready @ host:port`` /
+    ``reusing existing <id12>``. Pass ``mux.write`` to surface these in
+    the terminal; omit to keep startup silent (test default).
     """
 
     pg_launcher = pg_launcher or TestcontainersPostgres()
     redis_launcher = redis_launcher or TestcontainersRedis()
+    emit = progress or _noop_progress
 
     _apply_ryuk_policy(config, reuse)
 
@@ -263,7 +280,18 @@ def start_containers(
         if pg_existing is not None:
             pg_id, pg_host, pg_port = pg_existing
             pg_created = False
+            emit(
+                _DOCKER_STREAM,
+                _DOCKER_COLOR,
+                f"[docker] postgres: reusing existing container {pg_id[:12]} @ {pg_host}:{pg_port}",
+            )
         else:
+            emit(
+                _DOCKER_STREAM,
+                _DOCKER_COLOR,
+                f"[docker] postgres: starting image={config.postgres.image}…",
+            )
+            t0 = time.monotonic()
             pg_id, pg_host, pg_port = pg_launcher.start(
                 image=config.postgres.image,
                 user=config.postgres.user,
@@ -274,6 +302,11 @@ def start_containers(
                 init_script=init_script,
             )
             pg_created = True
+            emit(
+                _DOCKER_STREAM,
+                _DOCKER_COLOR,
+                f"[docker] postgres: ready @ {pg_host}:{pg_port} ({time.monotonic() - t0:.1f}s)",
+            )
 
     redis_id: str | None = None
     redis_host: str | None = None
@@ -286,12 +319,30 @@ def start_containers(
             if redis_existing is not None:
                 redis_id, redis_host, redis_port = redis_existing
                 redis_created = False
+                emit(
+                    _DOCKER_STREAM,
+                    _DOCKER_COLOR,
+                    f"[docker] redis: reusing existing container "
+                    f"{redis_id[:12]} @ {redis_host}:{redis_port}",
+                )
             else:
+                emit(
+                    _DOCKER_STREAM,
+                    _DOCKER_COLOR,
+                    f"[docker] redis: starting image={config.redis.image}…",
+                )
+                t0 = time.monotonic()
                 redis_id, redis_host, redis_port = redis_launcher.start(
                     image=config.redis.image,
                     name=redis_name,
                 )
                 redis_created = True
+                emit(
+                    _DOCKER_STREAM,
+                    _DOCKER_COLOR,
+                    f"[docker] redis: ready @ {redis_host}:{redis_port} "
+                    f"({time.monotonic() - t0:.1f}s)",
+                )
     except BaseException:
         # Roll back PG so we don't leak a half-started stack. Only stop
         # what we created — never tear down a container the caller asked
@@ -371,6 +422,11 @@ def _published_port(container: Container, internal: int) -> int:  # type: ignore
     if not bindings:
         raise DockerError(f"Container {container.id[:12]} has no published port for {internal}/tcp")
     return int(bindings[0]["HostPort"])
+
+
+def _noop_progress(name: str, color: str, line: str) -> None:
+    """Default progress callback — discards messages so callers that don't
+    care about progress (tests, library use) get the old silent behavior."""
 
 
 def _apply_ryuk_policy(config: RunSiteConfig, reuse: bool) -> None:
