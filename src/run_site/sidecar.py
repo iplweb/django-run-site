@@ -18,6 +18,8 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from run_site.fileutil import write_private_text
+
 logger = logging.getLogger(__name__)
 
 SIDECAR_FILENAME = ".run-site-config"
@@ -98,7 +100,9 @@ def write_sidecar(*, project_root: Path, info: SidecarInfo) -> Path:
     """
 
     path = sidecar_path(project_root)
-    path.write_text(_render(info), encoding="utf-8")
+    # Owner-only perms: the [postgres] block records the DB password in
+    # plaintext, so don't leave it world-readable under a default umask.
+    write_private_text(path, _render(info))
     return path
 
 

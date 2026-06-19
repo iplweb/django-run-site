@@ -48,6 +48,12 @@ class BannerInfo:
     # ``"skipped — SSH session ($SSH_CONNECTION set) (--browser to override)"``.
     # Always shown so the auto-detection is transparent. Empty string omits.
     browser_status: str = ""
+    # Absolute path to the sourceable ``.run-site-env.sh`` export, or None
+    # when it wasn't written. When set, the banner shows usage commands.
+    env_file_path: Path | None = None
+    # ``manage.py`` path for the env-file usage hint, rendered relative to
+    # the project root when possible (e.g. ``src/manage.py``).
+    manage_py_hint: str | None = None
 
 
 def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
@@ -118,6 +124,15 @@ def render_banner(*, config: RunSiteConfig, info: BannerInfo) -> str:
         lines.append(
             f"  {bold}Sidecar:{reset}  {info.sidecar_path} {gray}(removed on shutdown){reset}"
         )
+    if info.env_file_path is not None:
+        manage = info.manage_py_hint or "manage.py"
+        lines.append(
+            f"  {bold}Env file:{reset} {info.env_file_path} {gray}(removed on shutdown){reset}"
+        )
+        lines.append(
+            f"           {gray}source {info.env_file_path} && python {manage} shell{reset}"
+        )
+        lines.append(f"           {gray}source {info.env_file_path} && psql{reset}")
     lines.append("")
 
     if config.banner.suggest_dev_helpers and not info.dev_helpers_installed:

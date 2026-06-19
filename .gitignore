@@ -46,7 +46,7 @@ Thumbs.db
 .dev_helpers_port
 .dev_helpers_pg_port
 .dev_helpers_redis_port
-.run_site_*
+.run-site-*
 
 # Django
 *.log
