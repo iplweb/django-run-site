@@ -19,7 +19,10 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install ruff
+      # Pin ruff so lint is reproducible — an unpinned install drifts ahead
+      # of the version in the dev deps (uv.lock) and flags files the local
+      # toolchain considers clean. Keep this in sync with pyproject's pin.
+      - run: pip install ruff==0.15.12
       - run: ruff check .
       - run: ruff format --check .
 
