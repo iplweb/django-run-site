@@ -28,21 +28,21 @@ def test_sidecar_written_owner_only_0600(tmp_path: Path) -> None:
 
 
 def _make_info(**overrides) -> SidecarInfo:
-    base: dict = dict(
-        project_slug="myproj",
-        web_host="localhost",
-        web_port=8123,
-        pg_host="127.0.0.1",
-        pg_port=54321,
-        pg_db="myproj",
-        pg_user="myproj",
-        pg_password="password",
-        redis_host="127.0.0.1",
-        redis_port=16379,
-        redis_db=0,
-        celery_enabled=False,
-        celery_app=None,
-    )
+    base: dict = {
+        "project_slug": "myproj",
+        "web_host": "localhost",
+        "web_port": 8123,
+        "pg_host": "127.0.0.1",
+        "pg_port": 54321,
+        "pg_db": "myproj",
+        "pg_user": "myproj",
+        "pg_password": "password",
+        "redis_host": "127.0.0.1",
+        "redis_port": 16379,
+        "redis_db": 0,
+        "celery_enabled": False,
+        "celery_app": None,
+    }
     base.update(overrides)
     return SidecarInfo(**base)
 
