@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from run_site.config import RunSiteConfig, load_config
 from run_site.env import ContainerEndpoints
@@ -225,6 +229,28 @@ def test_write_overwrites_stale_file(tmp_path: Path) -> None:
     text = env_file_path(tmp_path).read_text()
     assert "STALE" not in text
     assert "FRESH" in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode bits")
+def test_write_creates_file_owner_only_0600(tmp_path: Path) -> None:
+    """The file holds plaintext secrets (PGPASSWORD, DJANGO_SECRET_KEY) — it
+    must be readable only by the owner, regardless of the process umask."""
+
+    path = write_env_file(
+        project_root=tmp_path, info=EnvFileInfo(exports=(("PGPASSWORD", "hunter2"),))
+    )
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode bits")
+def test_write_tightens_permissions_on_stale_loose_file(tmp_path: Path) -> None:
+    """A leftover world-readable file from an older run must be re-secured."""
+
+    stale = env_file_path(tmp_path)
+    stale.write_text("export OLD=1\n")
+    stale.chmod(0o644)
+    write_env_file(project_root=tmp_path, info=EnvFileInfo(exports=(("FOO", "bar"),)))
+    assert stat.S_IMODE(stale.stat().st_mode) == 0o600
 
 
 def test_remove_is_idempotent(tmp_path: Path) -> None:

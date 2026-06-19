@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import tomllib
 from pathlib import Path
+
+import pytest
 
 from run_site.sidecar import (
     SIDECAR_FILENAME,
@@ -12,6 +16,15 @@ from run_site.sidecar import (
     sidecar_path,
     write_sidecar,
 )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode bits")
+def test_sidecar_written_owner_only_0600(tmp_path: Path) -> None:
+    """The [postgres] block carries the DB password in plaintext — the file
+    must not be world-readable under a default umask."""
+
+    path = write_sidecar(project_root=tmp_path, info=_make_info())
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def _make_info(**overrides) -> SidecarInfo:

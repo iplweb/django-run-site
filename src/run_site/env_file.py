@@ -33,6 +33,7 @@ from run_site.env import (
     effective_env_mapping,
     project_env_values,
 )
+from run_site.fileutil import write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +109,14 @@ def env_file_path(project_root: Path) -> Path:
 def write_env_file(*, project_root: Path, info: EnvFileInfo) -> Path:
     """Write ``<project_root>/.run-site-env.sh``, overwriting any stale copy.
 
-    Returns the absolute path written.
+    The file holds plaintext secrets (``PGPASSWORD``, ``DJANGO_SECRET_KEY``),
+    so it is created with owner-only ``0o600`` permissions — independent of
+    the process umask — and an ``fchmod`` re-secures a looser file left by an
+    older run. Returns the absolute path written.
     """
 
     path = env_file_path(project_root)
-    path.write_text(_render(info), encoding="utf-8")
+    write_private_text(path, _render(info))
     return path
 
 
