@@ -593,6 +593,7 @@ the full integration story.
 
 - [Quickstart](docs/quickstart.md)
 - [Configuration reference](docs/configuration.md)
+- [Env file (`source` it in a second terminal)](docs/env-file.md)
 - [Run from Git or path](docs/from-git.md)
 - [Local processes (Celery, extras)](docs/local-processes.md)
 - [Hooks](docs/hooks.md)

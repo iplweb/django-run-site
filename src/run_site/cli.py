@@ -46,6 +46,7 @@ from run_site.env import (
     format_env_for_print,
     generate_autologin_token,
 )
+from run_site.env_file import build_env_file_info, remove_env_file, write_env_file
 from run_site.errors import RunSiteError
 from run_site.hooks import build_hook_context, run_hooks
 from run_site.host_discovery import discover_lan_hosts
@@ -787,6 +788,20 @@ def _execute_run(
             ),
         )
 
+        # Sourceable env export (.run-site-env.sh) — same lifecycle as the
+        # sidecar. Lets a second terminal `source` it and run manage.py /
+        # psql against the running stack. Built from the same project_env_values
+        # as the in-memory subprocess env, so the two never drift.
+        env_file = write_env_file(
+            project_root=config.project_root,
+            info=build_env_file_info(
+                config=config,
+                endpoints=endpoints,
+                secret_key=secret_key,
+                lan_hosts=lan_hosts,
+            ),
+        )
+
         # pre_serve hooks.
         ctx_pre_serve = _hook_context(
             config=config,
@@ -819,6 +834,13 @@ def _execute_run(
             extra_app_urls = tuple(f"http://{host}:{runserver_port}/" for host in extra_hosts)
         else:
             extra_app_urls = ()
+        # manage.py path for the env-file usage hint — relative to the
+        # project root when it lives under it (so a src/ layout shows
+        # ``src/manage.py``), else the absolute path.
+        try:
+            manage_py_hint = str(manage_py.relative_to(config.project_root))
+        except ValueError:
+            manage_py_hint = str(manage_py)
         homepage_url = f"http://{config.django.runserver_display_host}:{runserver_port}/"
         headless_signal = detect_headless_session()
         should_open_browser, browser_status = _resolve_browser_decision(
@@ -849,6 +871,8 @@ def _execute_run(
                 dev_helpers_installed=_dev_helpers_installed(python),
                 reuse=opts.reuse,
                 sidecar_path=sidecar_path,
+                env_file_path=env_file,
+                manage_py_hint=manage_py_hint,
                 superuser=superuser_payload,
                 sqlite_path=sqlite_state.path if sqlite_state else None,
                 sqlite_ephemeral=bool(sqlite_state and sqlite_state.ephemeral),
@@ -997,6 +1021,8 @@ def _execute_run(
             cleanup_sqlite(sqlite_state)
         with _suppress():
             remove_sidecar(project_root=config.project_root)
+        with _suppress():
+            remove_env_file(project_root=config.project_root)
         raise
 
 
@@ -1036,6 +1062,8 @@ def _shutdown(
             cleanup_sqlite(sqlite_state)
     with _suppress():
         remove_sidecar(project_root=config.project_root)
+    with _suppress():
+        remove_env_file(project_root=config.project_root)
     primary = proc_group.primary()
     if primary is not None and primary.returncode is not None:
         return primary.returncode

@@ -157,7 +157,7 @@ def build_subprocess_env(
     # names so DATABASE_URL / REDIS_URL / DJANGO_SECRET_KEY get exported
     # even when the user did not configure them.
     allowed_hosts = compute_allowed_hosts(bind=config.django.runserver_bind, lan_hosts=lan_hosts)
-    project_values = _project_values(
+    project_values = project_env_values(
         config, endpoints, secret_key=secret_key, allowed_hosts=allowed_hosts
     )
     effective_mapping = effective_env_mapping(config.env.mapping)
@@ -226,7 +226,7 @@ def effective_env_mapping(
     return out
 
 
-def _project_values(
+def project_env_values(
     config: RunSiteConfig,
     endpoints: ContainerEndpoints,
     *,
@@ -234,6 +234,10 @@ def _project_values(
     allowed_hosts: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Build the lookup dict consumed by the project ``[env]`` mapping.
+
+    Public because :mod:`run_site.env_file` reuses it as the single source
+    of truth for the ``.run-site-env.sh`` export (so the sourceable file
+    and the in-memory subprocess env never drift).
 
     Keys for a disabled service are omitted entirely — so a user with
     ``[postgres].enabled = false`` who still maps ``database_url`` will

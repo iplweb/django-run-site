@@ -318,3 +318,27 @@ def test_lifecycle_reuse_uses_only_enabled_container_in_docker_rm(
     )
     assert "docker rm -f demo-runsite-pg" in out
     assert "demo-runsite-redis" not in out
+
+
+def test_env_file_block_shows_path_and_source_commands(config: RunSiteConfig) -> None:
+    """When an env file was written, the banner shows its path plus
+    copy-pasteable ``source … && …`` commands for a second terminal."""
+
+    out = _strip_ansi(
+        render_banner(
+            config=config,
+            info=_make_info(
+                env_file_path=Path("/abs/project/.run-site-env.sh"),
+                manage_py_hint="src/manage.py",
+            ),
+        )
+    )
+    assert "Env file:" in out
+    assert "/abs/project/.run-site-env.sh" in out
+    assert "source /abs/project/.run-site-env.sh && python src/manage.py" in out
+    assert "source /abs/project/.run-site-env.sh && psql" in out
+
+
+def test_env_file_block_absent_without_path(config: RunSiteConfig) -> None:
+    out = _strip_ansi(render_banner(config=config, info=_make_info()))
+    assert "Env file:" not in out

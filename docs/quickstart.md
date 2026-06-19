@@ -131,17 +131,20 @@ That will:
 3. Create or update the `admin/admin` superuser.
 4. Drop a `.run-site-config` TOML at the project root with the live
    ports + connection URLs (read by `django-dev-helpers` and any other
-   tooling). Removed on clean shutdown.
+   tooling), plus a sourceable `.run-site-env.sh` so a second terminal can
+   `source` it and run `manage.py` / `psql` against the running stack (see
+   [docs/env-file.md](env-file.md)). Both are removed on clean shutdown.
 5. Start `runserver` on a free port.
 6. Print the **banner** with admin URL, copy-paste `psql` command, libpq
    env-var line, dev superuser credentials, container lifecycle info,
-   and the sidecar path.
+   the sidecar path, and the `.run-site-env.sh` usage commands.
 7. Multiplex container + runserver logs into your terminal.
 8. Open your browser on the homepage.
 
 Press **Ctrl-C** to shut everything down. The CLI stops the containers
-and removes `.run-site-config` unless you passed `--reuse` (which keeps
-the containers; the sidecar is still removed because it's per-run).
+and removes `.run-site-config` + `.run-site-env.sh` unless you passed
+`--reuse` (which keeps the containers; both files are still removed because
+they're per-run).
 
 ## 4. Reuse containers between runs
 
