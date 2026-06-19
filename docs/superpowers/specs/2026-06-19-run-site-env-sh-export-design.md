@@ -79,7 +79,7 @@ export PGPASSWORD="..."
 | `DJANGO_SECRET_KEY` | persisted secret, honoring `[env].secret_key` name | a secret key is in play (`secret_key is not None`) |
 | `DJANGO_ALLOWED_HOSTS` | `compute_allowed_hosts()`, honoring `[env].allowed_hosts` name | non-loopback bind (list is non-empty) |
 | `REDIS_URL` | `_project_values()["redis_url"]`, honoring `[env].redis_url` name | Redis enabled |
-| `PGHOST` `PGPORT` `PGDATABASE` `PGUSER` `PGPASSWORD` | endpoints + `config.postgres` | Postgres enabled (omitted entirely in SQLite mode) |
+| `PGHOST` `PGPORT` `PGDATABASE` `PGUSER` `PGPASSWORD` | `_project_values()` `db_host`/`db_port`/`db_name`/`db_user`/`db_password` | `db_host` present (real Postgres) — automatically omitted in SQLite mode |
 
 Notes:
 - The URL/Django vars respect the project's `[env]` mapping names (so a project
@@ -102,6 +102,44 @@ Notes:
   (the four characters special inside bash double quotes) and is unit-tested
   against adversarial values.
 
+## Banner hint (the "second terminal" affordance)
+
+The banner already prints a `Sidecar:` path line and a ready-to-paste `psql:`
+command + `env:` line (see `banner.py:117` and `_render_postgres_helpers`). The
+env file gets the same treatment: a block that shows **where the file is** and
+**exactly how to use it**, so the user never has to remember the syntax.
+
+Rendered block (shown only when the file was written — i.e. always, in a normal
+run):
+
+```
+  Env file: /abs/project/.run-site-env.sh  (removed on shutdown)
+            source /abs/project/.run-site-env.sh && python src/manage.py shell
+            source /abs/project/.run-site-env.sh && psql
+```
+
+- The `source … && …` examples use the **absolute** file path so they are
+  copy-pasteable from any working directory (matching how the existing `psql:`
+  helper uses absolute host/port).
+- The `manage.py` example uses the **actually resolved** `manage_py` path
+  (rendered relative to `project_root` when it lives under it — so a `src/`
+  layout correctly shows `src/manage.py`), so it's right for both flat and
+  `src/` projects.
+- The `psql` example needs **no arguments** — sourcing the file exports the
+  `PG*` libpq vars, so bare `psql` connects to the running container.
+
+### `BannerInfo` additions
+
+Two new optional fields on `BannerInfo` (`banner.py`):
+
+```python
+env_file_path: Path | None = None   # abs path to .run-site-env.sh, or None
+manage_py_hint: str | None = None    # e.g. "src/manage.py" or "manage.py"
+```
+
+`render_banner` emits the block above when `env_file_path is not None`. Existing
+callers/tests that omit the fields keep working (defaults render nothing).
+
 ## Code structure
 
 New module `src/run_site/env_file.py`, mirroring `sidecar.py`:
@@ -111,30 +149,55 @@ ENV_FILENAME = ".run-site-env.sh"
 
 @dataclass(frozen=True)
 class EnvFileInfo:
-    # the resolved KEY -> value pairs to export, already name-mapped
+    # the resolved KEY -> value pairs to export, already name-mapped and
+    # in deterministic emission order
     exports: tuple[tuple[str, str], ...]
 
+def build_env_file_info(
+    *,
+    config: RunSiteConfig,
+    endpoints: ContainerEndpoints,
+    secret_key: str | None,
+    lan_hosts: tuple[str, ...],
+) -> EnvFileInfo: ...                                      # the "builder" — holds all the logic
 def env_file_path(project_root: Path) -> Path: ...
 def write_env_file(*, project_root: Path, info: EnvFileInfo) -> Path: ...
 def remove_env_file(*, project_root: Path) -> None: ...   # best-effort, never raises
-def _render(info: EnvFileInfo) -> str: ...
+def _render(info: EnvFileInfo) -> str: ...                # comment header + `export K="V"` lines
 def _sh_double_quote(value: str) -> str: ...
 ```
 
-A small builder assembles `EnvFileInfo.exports` from `RunSiteConfig` +
-`ContainerEndpoints` + the resolved env mapping. To avoid duplicating the
-service-enabled/disabled logic, it reuses `_project_values()` and
+`build_env_file_info()` holds **all** the enabled/disabled logic (so tests 1–5
+target it; `_render` stays a dumb formatter over `exports`). To avoid
+duplicating service logic it reuses `_project_values()` and
 `effective_env_mapping()` from `env.py` (lifting `_project_values` to a public
-name if needed) for the URL/Django vars, and reads the `PG*` parts from
-`config.postgres` + `endpoints` directly.
+name) as the single source of truth:
+
+- **URL / Django vars** (`DATABASE_URL`, `REDIS_URL`, `DJANGO_SECRET_KEY`,
+  `DJANGO_ALLOWED_HOSTS`): take each value from `_project_values()` and map it
+  to the env-var **name** via `effective_env_mapping()` — identical to what the
+  in-memory env does. A name mapped to `null` is skipped.
+- **`PG*` libpq vars**: derive from `_project_values()`'s `db_host` / `db_port` /
+  `db_name` / `db_user` / `db_password` keys (→ `PGHOST` / `PGPORT` /
+  `PGDATABASE` / `PGUSER` / `PGPASSWORD`). Those keys are present **only** when
+  real Postgres is running, so emitting `PG*` gated on `db_host` being present
+  makes SQLite-mode omission automatic — no separate `config.postgres` read,
+  no duplicated enabled-check.
+
+Emission order is fixed (URLs, then Django, then `PG*`) for stable output and
+test assertions.
 
 ### Wiring in `cli.py`
 
 - After services start, call `write_env_file(...)` immediately adjacent to the
   existing `write_sidecar(...)` call, fed from the same `config` + `endpoints`
   + `secret_key` + `lan_hosts` already in scope.
-- In the shutdown path, call `remove_env_file(...)` adjacent to
-  `remove_sidecar(...)`.
+- In the shutdown path, call `remove_env_file(...)` adjacent to **both**
+  `remove_sidecar(...)` calls (cli.py:999 and cli.py:1038).
+- Build `env_file_path` + `manage_py_hint` and pass them into `BannerInfo` at
+  the existing construction site (cli.py:830). `manage_py_hint` is
+  `manage_py` made relative to `config.project_root` when possible, else the
+  absolute path.
 
 ## `.gitignore` fix (drive-by, in scope)
 
@@ -175,6 +238,12 @@ command suggests/writes (in `init_cmd.py`), if it carries the broken pattern.
    output (assert the escaped string round-trips through a shell parse).
 7. `remove_env_file` is idempotent / never raises when the file is absent.
 8. `write_env_file` overwrites a stale file from a crashed run.
+
+Banner tests in `tests/test_banner.py`:
+
+9. With `env_file_path` + `manage_py_hint` set → the `Env file:` line and both
+   `source … && …` usage lines render with the right paths.
+10. Without the new fields (default `None`) → no env-file block (back-compat).
 
 ## Rollout
 
