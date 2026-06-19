@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import http.server
 import socket
+import sys
 import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from run_site.log_multiplexer import LogMultiplexer
 from run_site.processes import (
+    ProcessGroup,
     TemplateContext,
     find_free_port,
     run_oneshot,
@@ -94,6 +99,109 @@ def test_wait_for_http_times_out_quickly() -> None:
         interval=0.1,
     )
     assert ok is False
+
+
+# --- ProcessGroup shutdown / Ctrl+C handling --------------------------------
+
+# A child that sleeps a long time and ignores SIGTERM, mimicking a worker
+# doing a slow "warm shutdown" or a server draining open connections. Only
+# SIGKILL stops it — which is exactly the escalation path we exercise.
+_STUBBORN = (
+    "import signal,time;"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+    "print('up', flush=True);"
+    "time.sleep(300)"
+)
+
+# A plain long-running child that exits cleanly on SIGTERM.
+_SLEEPER = "import time; print('up', flush=True); time.sleep(300)"
+
+
+@pytest.fixture
+def proc_group() -> Iterator[ProcessGroup]:
+    """A ProcessGroup whose children and stdout pipes are always cleaned up,
+    so a killed subprocess never leaks an open fd into a later test."""
+
+    mux = LogMultiplexer()
+    pg = ProcessGroup(mux)
+    try:
+        yield pg
+    finally:
+        pg.terminate_all()
+        # Killing the children gives the pump threads EOF; joining them lets
+        # each close its pipe so no fd leaks into a later test.
+        mux.join(timeout=1.0)
+
+
+def _spawn(pg: ProcessGroup, src: str, name: str = "web") -> None:
+    pg.spawn(
+        name=name,
+        argv=[sys.executable, "-c", src],
+        cwd=Path("/tmp"),
+        env={},
+        color="cyan",
+    )
+
+
+@pytest.mark.integration
+def test_request_shutdown_unblocks_wait_any_without_killing(proc_group: ProcessGroup) -> None:
+    """A Ctrl+C should be able to unblock the main loop by *requesting*
+    shutdown — the signal handler must not have to terminate processes
+    itself just to make wait_any() return."""
+
+    _spawn(proc_group, _SLEEPER)
+    returned = threading.Event()
+
+    def waiter() -> None:
+        proc_group.wait_any()
+        returned.set()
+
+    threading.Thread(target=waiter, daemon=True).start()
+    time.sleep(0.3)
+    assert not returned.is_set()  # no process has exited
+
+    proc_group.request_shutdown()
+
+    # wait_any must return promptly even though the child is still alive.
+    assert returned.wait(timeout=2.0)
+    assert proc_group.all()[0].is_running()  # we did NOT kill it
+
+
+@pytest.mark.integration
+def test_terminate_all_kills_stubborn_child_after_grace(proc_group: ProcessGroup) -> None:
+    """A child that ignores SIGTERM must still be reaped via SIGKILL once
+    the grace period elapses — shutdown always completes."""
+
+    proc_group.GRACE_SECONDS = 0.5
+    _spawn(proc_group, _STUBBORN)
+    time.sleep(0.4)  # let the child install its SIGTERM ignore handler
+
+    start = time.monotonic()
+    proc_group.terminate_all()
+    elapsed = time.monotonic() - start
+
+    assert not proc_group.all()[0].is_running()
+    assert elapsed < 5.0  # grace (0.5s) + reap, nowhere near a hang
+
+
+@pytest.mark.integration
+def test_second_request_forces_immediate_kill(proc_group: ProcessGroup) -> None:
+    """A second Ctrl+C while shutting down must escalate straight to SIGKILL
+    instead of waiting out the full grace period."""
+
+    proc_group.GRACE_SECONDS = 30.0  # huge grace: only the force path can be fast
+    _spawn(proc_group, _STUBBORN)
+    time.sleep(0.4)
+
+    proc_group.request_shutdown()  # first Ctrl+C — graceful
+    proc_group.request_shutdown()  # second Ctrl+C — force
+
+    start = time.monotonic()
+    proc_group.terminate_all()
+    elapsed = time.monotonic() - start
+
+    assert not proc_group.all()[0].is_running()
+    assert elapsed < 5.0  # forced: must NOT wait the 30s grace
 
 
 class _OkHandler(http.server.BaseHTTPRequestHandler):

@@ -974,8 +974,12 @@ def _execute_run(
                 )
                 probe_thread.start()
 
-            signal.signal(signal.SIGINT, lambda *_: _trigger_shutdown(proc_group))
-            signal.signal(signal.SIGTERM, lambda *_: _trigger_shutdown(proc_group))
+            # The handler does the bare minimum — flag the request and return.
+            # The actual teardown runs on the main thread below (in _shutdown),
+            # never inside the signal handler, so repeated Ctrl+C can't pile up
+            # nested terminate_all calls. A second Ctrl+C escalates to SIGKILL.
+            signal.signal(signal.SIGINT, lambda *_: proc_group.request_shutdown())
+            signal.signal(signal.SIGTERM, lambda *_: proc_group.request_shutdown())
             proc_group.wait_any()
         return _shutdown(
             proc_group=proc_group,
@@ -998,10 +1002,6 @@ def _execute_run(
         with _suppress():
             remove_sidecar(project_root=config.project_root)
         raise
-
-
-def _trigger_shutdown(proc_group: ProcessGroup) -> None:
-    proc_group.terminate_all()
 
 
 def _shutdown(

@@ -6,7 +6,7 @@ import io
 import sys
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 
 # ANSI escape sequences for terminal colors. Plain ANSI keeps the runtime
@@ -123,6 +123,7 @@ class LogMultiplexer:
 
     def _pump(self, spec: StreamSpec, source: object) -> None:
         wrapped: io.TextIOBase
+        own_wrapper = False
         if isinstance(source, io.TextIOBase):
             wrapped = source
         else:
@@ -138,6 +139,7 @@ class LogMultiplexer:
                 errors="replace",
                 write_through=True,
             )
+            own_wrapper = True
         try:
             for raw_line in wrapped:
                 self._emit(spec, raw_line.rstrip("\n"))
@@ -145,6 +147,13 @@ class LogMultiplexer:
             # Source was closed mid-iteration — ignore, this is the normal
             # termination path for terminated subprocesses.
             pass
+        finally:
+            # Close the wrapper we created (which also closes the underlying
+            # Popen pipe). Without this the pipe fd lingers until GC, which
+            # leaks descriptors across a long run and trips resource warnings.
+            if own_wrapper:
+                with suppress(OSError, ValueError):
+                    wrapped.close()
 
     def _emit(self, spec: StreamSpec, line: str) -> None:
         width = self._name_width or self.DEFAULT_NAME_WIDTH
