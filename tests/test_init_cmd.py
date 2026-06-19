@@ -323,16 +323,16 @@ def test_init_falls_back_to_executable_auto_without_uv(tmp_path: Path, monkeypat
 
 
 def _make_detected(**overrides) -> DetectedDefaults:
-    base: dict = dict(
-        project_root=Path("/tmp/x"),
-        manage_py_rel="manage.py",
-        project_slug="x",
-        django_module="x",
-        celery_app=None,
-        has_uv_lock=False,
-        has_venv=False,
-        has_uv=False,
-    )
+    base: dict = {
+        "project_root": Path("/tmp/x"),
+        "manage_py_rel": "manage.py",
+        "project_slug": "x",
+        "django_module": "x",
+        "celery_app": None,
+        "has_uv_lock": False,
+        "has_venv": False,
+        "has_uv": False,
+    }
     base.update(overrides)
     return DetectedDefaults(**base)
 
