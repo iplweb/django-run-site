@@ -461,6 +461,135 @@ def test_build_post_start_argv_uses_restore_source(
     assert restore[-1] == "/tmp/dump"
 
 
+# ---------------------------------------------------------------------------
+# fix_search_path: stream the dump through sed during restore.
+# ---------------------------------------------------------------------------
+
+
+def _with_fix(config: Any) -> Any:
+    from dataclasses import replace
+
+    return replace(config, dump=replace(config.dump, fix_search_path=True))
+
+
+def test_search_path_sed_constant_matches_bpp() -> None:
+    from run_site.dumps import SEARCH_PATH_SED
+
+    assert SEARCH_PATH_SED == (
+        "s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/"
+    )
+
+
+def test_build_plain_sql_fix_pipes_through_sed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert len(argvs) == 1 and isinstance(argvs[0], Pipe)
+    stages = argvs[0].stages
+    assert stages[0][0] == "/fake/bin/sed"
+    assert stages[0][1].startswith("s/set_config('search_path', '', false)")
+    assert str(dump) == stages[0][2]
+    assert stages[-1][0] == "/fake/bin/psql"
+    # No -f file arg on psql — it reads sed's stdout.
+    assert "-f" not in stages[-1]
+
+
+def test_build_plain_sql_without_fix_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=minimal_config,
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert argvs == [
+        (
+            "/fake/bin/psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "5432",
+            "-U",
+            "demo",
+            "-d",
+            "demo",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(dump),
+        )
+    ]
+
+
+def test_build_gzip_fix_inserts_sed_between_gunzip_and_psql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql.gz"
+    dump.write_bytes(b"\x1f\x8b\x08\x00")
+    plan = DumpPlan(path=dump, format=DumpFormat.GZIPPED_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert isinstance(argvs[0], Pipe)
+    labels = [s[0] for s in argvs[0].stages]
+    assert labels == ["gunzip", "/fake/bin/sed", "/fake/bin/psql"]
+
+
+def test_build_binary_fix_streams_pg_restore_through_sed_no_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    plan = DumpPlan(
+        path=tmp_path / "snap.dump", format=DumpFormat.PG_RESTORE, strategy="post-start"
+    )
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id="cid-9",
+        restore_source=tmp_path / "snap.dump",
+    )
+    cp, pipe = argvs
+    assert cp[1] == "cp" and "cid-9:/tmp/dump" in cp
+    assert isinstance(pipe, Pipe)
+    restore_stage = pipe.stages[0]
+    assert "pg_restore" in restore_stage and "-f" in restore_stage and "-" in restore_stage
+    assert "/tmp/dump" in restore_stage
+    # Parallel -j must be gone — sed can only filter a serial text stream.
+    assert "-j" not in restore_stage
+    assert pipe.stages[1][0] == "/fake/bin/sed"
+    assert pipe.stages[-1][0] == "/fake/bin/psql"
+
+
 def _capture_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Record every restore argv instead of shelling out."""
 

@@ -64,6 +64,18 @@ _PGDUMP_MAGIC = b"PGDMP"  # first bytes of a custom dump / a directory toc.dat
 _TAR_USTAR_OFFSET = 257  # POSIX/GNU tar puts "ustar" here in each header
 _SNIFF_BYTES = 512  # one tar header block — enough to see the ustar magic
 
+# Restore `public` to the restore-session search_path. Modern pg_dump /
+# pg_restore hardens its header (post CVE-2018-1058) with
+# `set_config('search_path', '', false)`; an empty path breaks restoring
+# objects whose definitions resolve operators/types in `public` eagerly
+# (e.g. an hstore comparison in a trigger WHEN clause:
+# "operator does not exist: public.hstore = public.hstore"). Safe because
+# pg_dump qualifies every object with its schema. Matches the bpp
+# pg-collation-migrate-3-load.sh streaming fix exactly.
+SEARCH_PATH_SED = (
+    "s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/"
+)
+
 
 @dataclass(frozen=True)
 class DumpPlan:
@@ -347,21 +359,20 @@ def build_post_start_argv(
 
     if plan.format is DumpFormat.PLAIN_SQL:
         psql = _require_tool("psql")
-        return [
-            (
-                psql,
-                *base_env_args,
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-f",
-                str(plan.path),
-            )
-        ]
+        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            return [Pipe(stages=((sed, SEARCH_PATH_SED, str(plan.path)), psql_argv))]
+        return [(*psql_argv, "-f", str(plan.path))]
 
     if plan.format is DumpFormat.GZIPPED_SQL:
         psql = _require_tool("psql")
         psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
-        return [Pipe(stages=(("gunzip", "-c", str(plan.path)), psql_argv))]
+        gunzip_argv = ("gunzip", "-c", str(plan.path))
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            return [Pipe(stages=(gunzip_argv, (sed, SEARCH_PATH_SED), psql_argv))]
+        return [Pipe(stages=(gunzip_argv, psql_argv))]
 
     if plan.format is DumpFormat.PG_RESTORE:
         if container_id is None:
@@ -370,10 +381,35 @@ def build_post_start_argv(
                 "(docker cp + pg_restore inside the container)."
             )
         docker = _require_tool("docker")
-        jobs = resolve_restore_jobs(config.dump.restore_jobs)
         source = restore_source if restore_source is not None else plan.path
+        cp_argv = (docker, "cp", str(source), f"{container_id}:/tmp/dump")
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            psql = _require_tool("psql")
+            logger.warning(
+                "fix_search_path is enabled: streaming %s through sed disables "
+                "parallel -j restore (the archive is converted to a serial SQL "
+                "stream).",
+                plan.path.name,
+            )
+            # ``pg_restore -f -`` only converts the archive to SQL on stdout; it
+            # does not connect to a DB, so it needs no PGPASSWORD. The host psql
+            # (same as plain/gzip) loads the filtered stream.
+            restore_stage = (
+                docker,
+                "exec",
+                container_id,
+                "pg_restore",
+                "--no-owner",
+                "-f",
+                "-",
+                "/tmp/dump",
+            )
+            psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+            return [cp_argv, Pipe(stages=(restore_stage, (sed, SEARCH_PATH_SED), psql_argv))]
+        jobs = resolve_restore_jobs(config.dump.restore_jobs)
         return [
-            (docker, "cp", str(source), f"{container_id}:/tmp/dump"),
+            cp_argv,
             (
                 docker,
                 "exec",
