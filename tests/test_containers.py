@@ -514,3 +514,98 @@ def test_docker_client_falls_back_to_from_env_without_context(monkeypatch) -> No
     monkeypatch.setattr(ContextAPI, "get_current_context", classmethod(lambda cls: None))
 
     assert containers_mod._docker_client() == "from-env-client"
+
+
+# ---------------------------------------------------------------------------
+# DOCKER_HOST export: make testcontainers honor the active `docker context`.
+#
+# testcontainers builds its OWN docker client via docker.from_env(), which —
+# like docker.from_env() everywhere — ignores the active `docker context`. It
+# only consults DOCKER_HOST / ~/.testcontainers.properties. So even after our
+# own client honors the context, PostgresContainer(...) construction still
+# crashes with FileNotFoundError on OrbStack / colima / Docker-Desktop-stopped.
+# We bridge the gap by exporting DOCKER_HOST from the active context before any
+# testcontainers client is built. This also routes Ryuk's socket bind-mount
+# (testcontainers' get_docker_socket → from_env) to the same endpoint.
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_docker_host_env_exports_active_context_host(monkeypatch) -> None:
+    from run_site import containers as containers_mod
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+
+    class FakeCtx:
+        Host = "unix:///Users/me/.orbstack/run/docker.sock"
+
+    monkeypatch.setattr(containers_mod, "_active_docker_context", lambda: FakeCtx())
+
+    containers_mod._ensure_docker_host_env()
+
+    import os
+
+    assert os.environ["DOCKER_HOST"] == "unix:///Users/me/.orbstack/run/docker.sock"
+
+
+def test_ensure_docker_host_env_respects_existing_docker_host(monkeypatch) -> None:
+    from run_site import containers as containers_mod
+
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/explicit.sock")
+
+    def fail_context():
+        raise AssertionError("must not resolve context when DOCKER_HOST is set")
+
+    monkeypatch.setattr(containers_mod, "_active_docker_context", fail_context)
+
+    containers_mod._ensure_docker_host_env()
+
+    import os
+
+    assert os.environ["DOCKER_HOST"] == "unix:///tmp/explicit.sock"
+
+
+def test_ensure_docker_host_env_noop_without_context(monkeypatch) -> None:
+    from run_site import containers as containers_mod
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(containers_mod, "_active_docker_context", lambda: None)
+
+    containers_mod._ensure_docker_host_env()
+
+    import os
+
+    assert "DOCKER_HOST" not in os.environ
+
+
+def test_start_containers_exports_docker_host_before_launching(minimal_config, monkeypatch) -> None:
+    """The DOCKER_HOST export must happen BEFORE launchers run, since
+    testcontainers builds its client during PostgresContainer construction."""
+    import os
+
+    from run_site import containers as containers_mod
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+
+    class FakeCtx:
+        Host = "unix:///Users/me/.orbstack/run/docker.sock"
+
+    monkeypatch.setattr(containers_mod, "_active_docker_context", lambda: FakeCtx())
+
+    seen: dict[str, object] = {}
+
+    class RecordingPgLauncher(FakePgLauncher):
+        def start(self, **kwargs):
+            seen["docker_host_at_start"] = os.environ.get("DOCKER_HOST")
+            return super().start(**kwargs)
+
+    pg = RecordingPgLauncher()
+    redis = FakeRedisLauncher()
+    start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+
+    assert seen["docker_host_at_start"] == "unix:///Users/me/.orbstack/run/docker.sock"

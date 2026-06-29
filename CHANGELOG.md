@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.4] — 2026-06-29
+
+### Fixed
+
+- **`run-site` still crashed at container startup with
+  `docker.errors.DockerException: ... FileNotFoundError(2, 'No such file or
+  directory')` on OrbStack / colima / a stopped Docker Desktop**, even after
+  v0.16.3 taught the daemon *check* to honor the active `docker context`. The
+  container *launch* path runs through `testcontainers`, which builds its own
+  client via `docker.from_env()` — and `from_env()`, unlike the `docker` CLI,
+  ignores the active context. So `PostgresContainer(...)` construction resolved
+  the platform-default `/var/run/docker.sock` (absent, or a dangling symlink
+  left behind by Docker Desktop) and died, even though `docker ps` worked.
+  `run-site` now exports `DOCKER_HOST` from the active context before any
+  testcontainers client is built, so the SDK client **and** Ryuk's socket
+  bind-mount resolve the same endpoint the CLI uses. An explicit `DOCKER_HOST`
+  still wins; with no resolvable context it falls back to the default socket.
+
+## [0.16.3] — 2026-06-29
+
+### Fixed
+
+- **`Docker daemon is not reachable` even though `docker ps` worked**, on
+  setups where the daemon lives on a non-default socket (OrbStack, colima,
+  Docker Desktop). The availability check used `docker.from_env()`, which
+  honors `DOCKER_HOST` but — unlike the `docker` CLI — ignores the active
+  `docker context`. It now mirrors the CLI's precedence: `DOCKER_HOST` first,
+  then the active context endpoint, then `from_env()` as a fallback.
+
+## [0.16.2] — 2026-06-29
+
+### Added
+
+- **Sourceable `.run-site-env.sh` export** so a second terminal can pick up a
+  running stack's environment (database / Redis endpoints) with `source`.
+
 ## [0.16.1] — 2026-06-05
 
 ### Fixed

@@ -268,6 +268,9 @@ def start_containers(
     redis_launcher = redis_launcher or TestcontainersRedis()
     emit = progress or _noop_progress
 
+    # Make testcontainers' own from_env() client honor the active docker
+    # context — must run before any launcher builds a container/client.
+    _ensure_docker_host_env()
     _apply_ryuk_policy(config, reuse)
 
     pg_id: str | None = None
@@ -393,6 +396,7 @@ def stop_containers(
 def assert_docker_available() -> None:
     """Raise :class:`DockerError` if the daemon isn't reachable."""
 
+    _ensure_docker_host_env()
     try:
         client = _docker_client()
         client.ping()
@@ -437,6 +441,35 @@ def _docker_client():  # type: ignore[no-untyped-def]
         raise
     except Exception as exc:
         raise DockerError("Could not create Docker client. Is the docker daemon running?") from exc
+
+
+def _ensure_docker_host_env() -> None:
+    """Export ``DOCKER_HOST`` from the active ``docker context`` when unset.
+
+    ``testcontainers`` builds its own Docker SDK client via ``docker.from_env()``
+    (``testcontainers.core.docker_client.DockerClient``), which — like
+    ``from_env()`` everywhere — honors ``DOCKER_HOST`` but ignores the active
+    ``docker context``. So even after :func:`_docker_client` honors the context,
+    ``PostgresContainer(...)`` construction still resolves the platform default
+    socket and crashes with ``FileNotFoundError`` on OrbStack / colima / a
+    stopped Docker Desktop (where ``/var/run/docker.sock`` is absent or a
+    dangling symlink) — exactly the daemon ``docker ps`` talks to fine.
+
+    Exporting ``DOCKER_HOST`` once, before any testcontainers client is built,
+    closes that gap: the same value also routes Ryuk's socket bind-mount
+    (testcontainers' ``get_docker_socket`` → ``from_env``) to the right
+    endpoint, so the whole process resolves Docker the way the CLI does.
+
+    No-op when ``DOCKER_HOST`` is already set (explicit user choice wins) or no
+    context endpoint resolves (fall back to the platform default socket).
+    """
+
+    if os.environ.get("DOCKER_HOST"):
+        return
+    ctx = _active_docker_context()
+    host = getattr(ctx, "Host", None) if ctx is not None else None
+    if host:
+        os.environ["DOCKER_HOST"] = host
 
 
 def _active_docker_context():  # type: ignore[no-untyped-def]
