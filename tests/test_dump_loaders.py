@@ -701,3 +701,151 @@ def test_execute_post_start_restores_tar_gz_directory_via_pg_restore(
     assert "cid-9:/tmp/dump" in cp
     assert any("pg_restore" in " ".join(c) for c in calls), calls
     assert any("pg_restore" in line for line in events), events
+
+
+# ---------------------------------------------------------------------------
+# pv progress bar: insert pv as the first pipe stage when stderr is a TTY.
+# ---------------------------------------------------------------------------
+
+
+def _fake_stderr(tty: bool) -> Any:
+    class _S:
+        def isatty(self) -> bool:
+            return tty
+
+    return _S()
+
+
+def test_should_show_progress_bar_requires_pv_and_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    from run_site import dumps
+
+    monkeypatch.setattr(dumps.sys, "stderr", _fake_stderr(True))
+    monkeypatch.setattr(dumps.shutil, "which", lambda tool: "/usr/bin/pv")
+    assert dumps._should_show_progress_bar() is True
+
+    monkeypatch.setattr(dumps.shutil, "which", lambda tool: None)
+    assert dumps._should_show_progress_bar() is False
+
+    monkeypatch.setattr(dumps.shutil, "which", lambda tool: "/usr/bin/pv")
+    monkeypatch.setattr(dumps.sys, "stderr", _fake_stderr(False))
+    assert dumps._should_show_progress_bar() is False
+
+
+def test_build_plain_progress_bar_prepends_pv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=minimal_config,
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+        progress_bar=True,
+    )
+    assert len(argvs) == 1 and isinstance(argvs[0], Pipe)
+    stages = argvs[0].stages
+    assert stages[0][0] == "/fake/bin/pv"
+    assert str(dump) in stages[0]
+    # pv is the FIRST (intermediate) stage so its bar reaches the TTY; psql last.
+    assert stages[-1][0] == "/fake/bin/psql"
+    assert "-f" not in stages[-1]
+
+
+def test_build_plain_progress_bar_with_fix_orders_pv_sed_psql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+        progress_bar=True,
+    )
+    assert isinstance(argvs[0], Pipe)
+    labels = [s[0] for s in argvs[0].stages]
+    assert labels == ["/fake/bin/pv", "/fake/bin/sed", "/fake/bin/psql"]
+    # sed reads stdin (no file arg) since pv is upstream.
+    assert argvs[0].stages[1] == (
+        "/fake/bin/sed",
+        "s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/",
+    )
+
+
+def test_build_gzip_progress_bar_orders_pv_gunzip_psql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql.gz"
+    dump.write_bytes(b"\x1f\x8b\x08\x00")
+    plan = DumpPlan(path=dump, format=DumpFormat.GZIPPED_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=minimal_config,
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+        progress_bar=True,
+    )
+    assert isinstance(argvs[0], Pipe)
+    labels = [s[0] for s in argvs[0].stages]
+    assert labels == ["/fake/bin/pv", "gunzip", "/fake/bin/psql"]
+    # gunzip reads stdin (no file arg) since pv is upstream.
+    assert argvs[0].stages[1] == ("gunzip", "-c")
+
+
+def test_build_gzip_progress_bar_with_fix_orders_all_four(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql.gz"
+    dump.write_bytes(b"\x1f\x8b\x08\x00")
+    plan = DumpPlan(path=dump, format=DumpFormat.GZIPPED_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+        progress_bar=True,
+    )
+    assert isinstance(argvs[0], Pipe)
+    labels = [s[0] for s in argvs[0].stages]
+    assert labels == ["/fake/bin/pv", "gunzip", "/fake/bin/sed", "/fake/bin/psql"]
+
+
+def test_build_binary_ignores_progress_bar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    """Binary archives can't be pv'd (no host stream); progress_bar is a no-op."""
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    plan = DumpPlan(
+        path=tmp_path / "snap.dump", format=DumpFormat.PG_RESTORE, strategy="post-start"
+    )
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=minimal_config,
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id="cid-1",
+        restore_source=tmp_path / "snap.dump",
+        progress_bar=True,
+    )
+    # docker cp + plain pg_restore -j; no pv anywhere.
+    assert not any("pv" in str(a) for a in argvs)

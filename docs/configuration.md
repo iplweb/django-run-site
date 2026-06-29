@@ -226,6 +226,16 @@ line, run-site logs a warning that the fix is a no-op.
 
 CLI override: `--fix-search-path` / `--no-fix-search-path`.
 
+### Restore progress bar
+
+If [`pv`](https://www.ivarch.com/programs/pv.shtml) is installed and
+run-site's output is an interactive terminal, post-start restores of plain
+`.sql` and gzipped `.sql.gz` dumps show a live `pv` progress bar (the dump
+is streamed `pv file | … | psql`). It is automatic — no configuration — and
+silently absent when `pv` is missing or output is non-interactive (CI,
+piped, headless). Binary `pg_restore` archives and `init-script` restores
+do not show a bar (no host-side stream to measure).
+
 ## `[env]`
 
 Two flavors of env passing:

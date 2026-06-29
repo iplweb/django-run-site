@@ -27,6 +27,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
@@ -320,6 +321,53 @@ def _decide_strategy(
     return DumpPlan(path=path, format=format_, strategy="post-start")
 
 
+def _should_show_progress_bar() -> bool:
+    """True when a ``pv`` progress bar can render: ``pv`` is installed and our
+    stderr is a real terminal (otherwise the bar would be dumped into a pipe
+    or log, or nothing at all in CI/headless runs)."""
+
+    return shutil.which("pv") is not None and sys.stderr.isatty()
+
+
+def _build_text_sql_argv(
+    *,
+    plan: DumpPlan,
+    base_env_args: list[str],
+    fix: bool,
+    progress_bar: bool,
+) -> list[Sequence[str] | Pipe]:
+    """Build the argv(s) for a plain or gzipped SQL restore.
+
+    Composes a pipeline from optional stages, in order:
+    ``pv`` (progress bar, reads the file) → ``gunzip`` (gzip only) → ``sed``
+    (search_path fix) → ``psql``. When ``pv`` is the source stage every
+    downstream tool reads stdin; otherwise each reads the file directly.
+    ``pv`` must be a non-final stage so its bar (on stderr) reaches the TTY.
+    """
+
+    psql = _require_tool("psql")
+    psql_argv: Sequence[str] = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+    stages: list[Sequence[str]] = []
+
+    if progress_bar:
+        pv = _require_tool("pv")
+        stages.append((pv, "-N", plan.path.name, str(plan.path)))
+
+    if plan.format is DumpFormat.GZIPPED_SQL:
+        # With pv upstream, gunzip reads stdin; otherwise it reads the file.
+        stages.append(("gunzip", "-c") if stages else ("gunzip", "-c", str(plan.path)))
+
+    if fix:
+        sed = _require_tool("sed")
+        stages.append((sed, SEARCH_PATH_SED) if stages else (sed, SEARCH_PATH_SED, str(plan.path)))
+
+    stages.append(psql_argv)
+    if len(stages) == 1:
+        # Plain SQL, no pv, no fix → psql reads the file directly (no pipe).
+        return [(*psql_argv, "-f", str(plan.path))]
+    return [Pipe(stages=tuple(stages))]
+
+
 def resolve_restore_jobs(jobs: int | str) -> int:
     if isinstance(jobs, int):
         return jobs
@@ -334,6 +382,7 @@ def build_post_start_argv(
     pg_port: int,
     container_id: str | None,
     restore_source: Path | None = None,
+    progress_bar: bool = False,
 ) -> list[Sequence[str] | Pipe]:
     """Return a list of argv tuples to execute, in order.
 
@@ -357,22 +406,13 @@ def build_post_start_argv(
         config.postgres.db,
     ]
 
-    if plan.format is DumpFormat.PLAIN_SQL:
-        psql = _require_tool("psql")
-        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
-        if config.dump.fix_search_path:
-            sed = _require_tool("sed")
-            return [Pipe(stages=((sed, SEARCH_PATH_SED, str(plan.path)), psql_argv))]
-        return [(*psql_argv, "-f", str(plan.path))]
-
-    if plan.format is DumpFormat.GZIPPED_SQL:
-        psql = _require_tool("psql")
-        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
-        gunzip_argv = ("gunzip", "-c", str(plan.path))
-        if config.dump.fix_search_path:
-            sed = _require_tool("sed")
-            return [Pipe(stages=(gunzip_argv, (sed, SEARCH_PATH_SED), psql_argv))]
-        return [Pipe(stages=(gunzip_argv, psql_argv))]
+    if plan.format in (DumpFormat.PLAIN_SQL, DumpFormat.GZIPPED_SQL):
+        return _build_text_sql_argv(
+            plan=plan,
+            base_env_args=base_env_args,
+            fix=config.dump.fix_search_path,
+            progress_bar=progress_bar,
+        )
 
     if plan.format is DumpFormat.PG_RESTORE:
         if container_id is None:
@@ -458,6 +498,7 @@ def execute_post_start(
     env.setdefault("PGPASSWORD", config.postgres.password)
     emit = progress or _noop_dump_progress
     size_label = _format_size(plan.path)
+    progress_bar = _should_show_progress_bar()
 
     if config.dump.fix_search_path and not _dump_has_empty_search_path(plan):
         logger.warning(
@@ -478,6 +519,7 @@ def execute_post_start(
                 pg_port=pg_port,
                 container_id=container_id,
                 restore_source=source,
+                progress_bar=progress_bar,
             )
             _run_argvs(argvs, env=env, emit=emit, plan=plan, size_label=size_label, config=config)
         return
@@ -488,6 +530,7 @@ def execute_post_start(
         pg_host=pg_host,
         pg_port=pg_port,
         container_id=container_id,
+        progress_bar=progress_bar,
     )
     _run_argvs(argvs, env=env, emit=emit, plan=plan, size_label=size_label, config=config)
 
