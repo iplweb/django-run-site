@@ -408,12 +408,52 @@ def assert_docker_available() -> None:
 
 
 def _docker_client():  # type: ignore[no-untyped-def]
+    """Create a Docker SDK client, honoring the active ``docker context``.
+
+    ``docker.from_env()`` honors ``DOCKER_HOST`` but — unlike the ``docker``
+    CLI — ignores the active ``docker context``. On machines where the daemon
+    lives on a non-default socket (OrbStack, colima, Docker Desktop) and
+    ``/var/run/docker.sock`` is absent or a dangling symlink, ``from_env()``
+    reports the daemon as unreachable even though ``docker ps`` works fine.
+
+    We therefore mirror the CLI's precedence: ``DOCKER_HOST`` wins, otherwise
+    connect to the active context's endpoint, otherwise fall back to
+    ``from_env()`` (which yields the platform default socket).
+    """
+
     try:
         import docker
 
+        if os.environ.get("DOCKER_HOST"):
+            return docker.from_env()
+
+        ctx = _active_docker_context()
+        if ctx is not None and ctx.Host:
+            return docker.DockerClient(
+                base_url=ctx.Host, tls=getattr(ctx, "TLSConfig", None) or False
+            )
         return docker.from_env()
+    except DockerError:
+        raise
     except Exception as exc:
         raise DockerError("Could not create Docker client. Is the docker daemon running?") from exc
+
+
+def _active_docker_context():  # type: ignore[no-untyped-def]
+    """Return the active ``docker context`` object, or ``None``.
+
+    Resolution failures (older SDK without context support, malformed
+    ``~/.docker/config.json``, missing context) are logged and swallowed so
+    the caller falls back to ``docker.from_env()``.
+    """
+
+    try:
+        from docker.context import ContextAPI
+
+        return ContextAPI.get_current_context()
+    except Exception:
+        logger.debug("Could not resolve active docker context", exc_info=True)
+        return None
 
 
 def _published_port(container: Container, internal: int) -> int:  # type: ignore[no-any-unimported]

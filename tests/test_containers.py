@@ -441,3 +441,76 @@ def test_stop_containers_noop_when_ids_are_none() -> None:
     stop_containers(containers, pg_launcher=pg, redis_launcher=redis)
     assert pg.stopped == []
     assert redis.stopped == []
+
+
+# ---------------------------------------------------------------------------
+# Docker client resolution: honor the active `docker context`.
+#
+# docker.from_env() honors DOCKER_HOST but — unlike the docker CLI — ignores
+# the active `docker context`. On OrbStack / colima / Docker Desktop the daemon
+# lives on a non-default socket and /var/run/docker.sock may be absent or a
+# dangling symlink, so the daemon looks unreachable even though `docker ps`
+# works. These tests pin the CLI-faithful precedence: DOCKER_HOST first, then
+# the active context, then from_env() as a fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_docker_client_uses_active_context_when_no_docker_host(monkeypatch) -> None:
+    import docker
+    from docker.context import ContextAPI
+
+    from run_site import containers as containers_mod
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+
+    captured: dict[str, object] = {}
+
+    def fake_docker_client(base_url=None, **kwargs):
+        captured["base_url"] = base_url
+        return "ctx-client"
+
+    def fake_from_env(*args, **kwargs):
+        captured["from_env"] = True
+        return "from-env-client"
+
+    class FakeCtx:
+        Host = "unix:///Users/me/.orbstack/run/docker.sock"
+        TLSConfig = None
+
+    monkeypatch.setattr(docker, "DockerClient", fake_docker_client)
+    monkeypatch.setattr(docker, "from_env", fake_from_env)
+    monkeypatch.setattr(ContextAPI, "get_current_context", classmethod(lambda cls: FakeCtx()))
+
+    assert containers_mod._docker_client() == "ctx-client"
+    assert captured["base_url"] == "unix:///Users/me/.orbstack/run/docker.sock"
+    assert "from_env" not in captured
+
+
+def test_docker_client_prefers_docker_host_env(monkeypatch) -> None:
+    import docker
+
+    from run_site import containers as containers_mod
+
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/explicit.sock")
+
+    monkeypatch.setattr(docker, "from_env", lambda *a, **k: "from-env-client")
+
+    def fail_docker_client(**kwargs):
+        raise AssertionError("must not resolve context when DOCKER_HOST is set")
+
+    monkeypatch.setattr(docker, "DockerClient", fail_docker_client)
+
+    assert containers_mod._docker_client() == "from-env-client"
+
+
+def test_docker_client_falls_back_to_from_env_without_context(monkeypatch) -> None:
+    import docker
+    from docker.context import ContextAPI
+
+    from run_site import containers as containers_mod
+
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setattr(docker, "from_env", lambda *a, **k: "from-env-client")
+    monkeypatch.setattr(ContextAPI, "get_current_context", classmethod(lambda cls: None))
+
+    assert containers_mod._docker_client() == "from-env-client"

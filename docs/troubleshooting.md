@@ -20,6 +20,30 @@ fixes:
 `run-site doctor` runs the same probe and prints the same error if
 it fails — useful as a one-liner sanity check.
 
+### `docker ps` works but `run-site` still says it's unreachable
+
+If the `docker` CLI works (`docker ps` succeeds) but `run-site` reports
+the daemon as unreachable, you are almost certainly using a non-default
+**Docker context** — for example OrbStack, colima, or a Docker Desktop
+install where `/var/run/docker.sock` is missing or a dangling symlink.
+The CLI follows the active `docker context`; `run-site` now does too,
+resolving the context endpoint automatically.
+
+If it still fails, point `run-site` at the daemon explicitly by exporting
+`DOCKER_HOST` to the active context's socket (which always takes
+precedence):
+
+```
+# see the active context and its endpoint
+docker context ls
+docker context inspect -f '{{.Endpoints.docker.Host}}'
+
+# e.g. OrbStack
+export DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock
+# e.g. colima
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+```
+
 ## `manage.py` not found
 
 ```
