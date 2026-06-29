@@ -30,7 +30,7 @@ import subprocess
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -64,6 +64,18 @@ _PGDUMP_MAGIC = b"PGDMP"  # first bytes of a custom dump / a directory toc.dat
 _TAR_USTAR_OFFSET = 257  # POSIX/GNU tar puts "ustar" here in each header
 _SNIFF_BYTES = 512  # one tar header block — enough to see the ustar magic
 
+# Restore `public` to the restore-session search_path. Modern pg_dump /
+# pg_restore hardens its header (post CVE-2018-1058) with
+# `set_config('search_path', '', false)`; an empty path breaks restoring
+# objects whose definitions resolve operators/types in `public` eagerly
+# (e.g. an hstore comparison in a trigger WHEN clause:
+# "operator does not exist: public.hstore = public.hstore"). Safe because
+# pg_dump qualifies every object with its schema. Matches the bpp
+# pg-collation-migrate-3-load.sh streaming fix exactly.
+SEARCH_PATH_SED = (
+    "s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/"
+)
+
 
 @dataclass(frozen=True)
 class DumpPlan:
@@ -73,6 +85,17 @@ class DumpPlan:
     format: DumpFormat
     strategy: str  # "init-script" | "post-start" | "skip"
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Pipe:
+    """An N-stage shell-free pipeline: stages[i].stdout -> stages[i+1].stdin.
+
+    Replaces the old ``("__pipe__", *left, *right)`` tuple encoding so a
+    middle ``sed`` filter can sit between ``gunzip``/``pg_restore`` and
+    ``psql``."""
+
+    stages: tuple[Sequence[str], ...]
 
 
 def _read_head(path: Path, n: int) -> bytes:
@@ -311,7 +334,7 @@ def build_post_start_argv(
     pg_port: int,
     container_id: str | None,
     restore_source: Path | None = None,
-) -> list[Sequence[str]]:
+) -> list[Sequence[str] | Pipe]:
     """Return a list of argv tuples to execute, in order.
 
     For plain/gzipped dumps the only argv is ``psql`` (with ``gunzip`` piped
@@ -336,33 +359,20 @@ def build_post_start_argv(
 
     if plan.format is DumpFormat.PLAIN_SQL:
         psql = _require_tool("psql")
-        return [
-            (
-                psql,
-                *base_env_args,
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-f",
-                str(plan.path),
-            )
-        ]
+        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            return [Pipe(stages=((sed, SEARCH_PATH_SED, str(plan.path)), psql_argv))]
+        return [(*psql_argv, "-f", str(plan.path))]
 
     if plan.format is DumpFormat.GZIPPED_SQL:
         psql = _require_tool("psql")
-        # We rely on the shell-pipe via subprocess.run(shell=True) at the
-        # call site; here we return tokens for the dumps runner to compose.
-        return [
-            (
-                "__pipe__",
-                "gunzip",
-                "-c",
-                str(plan.path),
-                psql,
-                *base_env_args,
-                "-v",
-                "ON_ERROR_STOP=1",
-            )
-        ]
+        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+        gunzip_argv = ("gunzip", "-c", str(plan.path))
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            return [Pipe(stages=(gunzip_argv, (sed, SEARCH_PATH_SED), psql_argv))]
+        return [Pipe(stages=(gunzip_argv, psql_argv))]
 
     if plan.format is DumpFormat.PG_RESTORE:
         if container_id is None:
@@ -371,10 +381,35 @@ def build_post_start_argv(
                 "(docker cp + pg_restore inside the container)."
             )
         docker = _require_tool("docker")
-        jobs = resolve_restore_jobs(config.dump.restore_jobs)
         source = restore_source if restore_source is not None else plan.path
+        cp_argv = (docker, "cp", str(source), f"{container_id}:/tmp/dump")
+        if config.dump.fix_search_path:
+            sed = _require_tool("sed")
+            psql = _require_tool("psql")
+            logger.warning(
+                "fix_search_path is enabled: streaming %s through sed disables "
+                "parallel -j restore (the archive is converted to a serial SQL "
+                "stream).",
+                plan.path.name,
+            )
+            # ``pg_restore -f -`` only converts the archive to SQL on stdout; it
+            # does not connect to a DB, so it needs no PGPASSWORD. The host psql
+            # (same as plain/gzip) loads the filtered stream.
+            restore_stage = (
+                docker,
+                "exec",
+                container_id,
+                "pg_restore",
+                "--no-owner",
+                "-f",
+                "-",
+                "/tmp/dump",
+            )
+            psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+            return [cp_argv, Pipe(stages=(restore_stage, (sed, SEARCH_PATH_SED), psql_argv))]
+        jobs = resolve_restore_jobs(config.dump.restore_jobs)
         return [
-            (docker, "cp", str(source), f"{container_id}:/tmp/dump"),
+            cp_argv,
             (
                 docker,
                 "exec",
@@ -424,6 +459,14 @@ def execute_post_start(
     emit = progress or _noop_dump_progress
     size_label = _format_size(plan.path)
 
+    if config.dump.fix_search_path and not _dump_has_empty_search_path(plan):
+        logger.warning(
+            "fix_search_path is enabled but %s's header has no "
+            "set_config('search_path', '', false) line — the fix is a no-op "
+            "(the dump format may have changed).",
+            plan.path.name,
+        )
+
     if plan.format is DumpFormat.PG_RESTORE:
         # Peel any outer gzip/tar wrapper to a path pg_restore can read; the
         # temp extraction (if any) lives only for the duration of the restore.
@@ -450,7 +493,7 @@ def execute_post_start(
 
 
 def _run_argvs(
-    argvs: list[Sequence[str]],
+    argvs: list[Sequence[str] | Pipe],
     *,
     env: dict[str, str],
     emit: DumpProgressCallback,
@@ -459,19 +502,9 @@ def _run_argvs(
     config: RunSiteConfig,
 ) -> None:
     for argv in argvs:
-        if argv[0] == "__pipe__":
-            # ("__pipe__", *left_argv, *right_argv) — encoded as marker plus
-            # left/right cmd halves separated by "psql".
-            tokens = list(argv[1:])
-            psql_idx = next(i for i, t in enumerate(tokens) if t.endswith("psql"))
-            left = tokens[:psql_idx]
-            right = tokens[psql_idx:]
-            emit(
-                "dump",
-                f"[dump] loading {plan.path.name} ({size_label}) via "
-                f"{Path(left[0]).name} | {Path(right[0]).name}…",
-            )
-            _run_pipe(left, right, env=env, fail_fast=config.dump.fail_fast)
+        if isinstance(argv, Pipe):
+            emit("dump", _describe_pipe(argv, plan=plan, size_label=size_label))
+            _run_pipe(argv.stages, env=env, fail_fast=config.dump.fail_fast)
         else:
             emit("dump", _describe_step(argv, plan=plan, size_label=size_label))
             _run(list(argv), env=env, fail_fast=config.dump.fail_fast)
@@ -487,32 +520,43 @@ def _run(argv: Sequence[str], *, env: dict[str, str], fail_fast: bool) -> None:
 
 
 def _run_pipe(
-    left: Sequence[str],
-    right: Sequence[str],
+    stages: Sequence[Sequence[str]],
     *,
     env: dict[str, str],
     fail_fast: bool,
 ) -> None:
-    left_proc = subprocess.Popen(list(left), env=env, stdout=subprocess.PIPE)
-    try:
-        right_proc = subprocess.run(
-            list(right),
-            env=env,
-            stdin=left_proc.stdout,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        if left_proc.stdout is not None:
-            left_proc.stdout.close()
-        left_proc.wait()
-    if (left_proc.returncode != 0 or right_proc.returncode != 0) and fail_fast:
+    """Run ``stages`` as a pipeline: each stage's stdout is the next stage's
+    stdin. The final stage's stdout/stderr are captured for error reporting.
+    Raises :class:`DumpError` if any stage exits non-zero and ``fail_fast``
+    is set (pipefail semantics)."""
+
+    if not stages:
+        return
+    procs: list[subprocess.Popen[bytes]] = []
+    prev_stdout = None
+    for stage in stages[:-1]:
+        proc = subprocess.Popen(list(stage), env=env, stdin=prev_stdout, stdout=subprocess.PIPE)
+        if prev_stdout is not None:
+            # Parent closes its copy so a downstream exit propagates SIGPIPE.
+            prev_stdout.close()
+        procs.append(proc)
+        prev_stdout = proc.stdout
+    last = subprocess.run(
+        list(stages[-1]),
+        env=env,
+        stdin=prev_stdout,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if prev_stdout is not None:
+        prev_stdout.close()
+    codes = [(list(stage), proc.wait()) for stage, proc in zip(stages[:-1], procs, strict=True)]
+    codes.append((list(stages[-1]), last.returncode))
+    if any(rc != 0 for _, rc in codes) and fail_fast:
+        detail = "\n".join(f"  exit {rc}: {argv}" for argv, rc in codes)
         raise DumpError(
-            f"Piped restore failed: left={left_proc.returncode} "
-            f"right={right_proc.returncode}\n"
-            f"left argv: {list(left)}\nright argv: {list(right)}\n"
-            f"stdout:\n{right_proc.stdout}\nstderr:\n{right_proc.stderr}"
+            f"Piped restore failed:\n{detail}\nstdout:\n{last.stdout}\nstderr:\n{last.stderr}"
         )
 
 
@@ -536,6 +580,18 @@ def _format_size(path: Path) -> str:
             return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} TB"
+
+
+def _pipe_stage_label(stage: Sequence[str]) -> str:
+    head = Path(stage[0]).name
+    if head == "docker" and "pg_restore" in stage:
+        return "pg_restore"
+    return head
+
+
+def _describe_pipe(pipe: Pipe, *, plan: DumpPlan, size_label: str) -> str:
+    names = " | ".join(_pipe_stage_label(s) for s in pipe.stages)
+    return f"[dump] loading {plan.path.name} ({size_label}) via {names}…"
 
 
 def _describe_step(argv: Sequence[str], *, plan: DumpPlan, size_label: str) -> str:
@@ -568,3 +624,54 @@ def _require_tool(tool: str) -> str:
     if path is None:
         raise DumpError(f"{tool!r} not found on PATH; install it to load this dump format.")
     return path
+
+
+def write_search_path_filtered(src: Path, dst: Path) -> None:
+    """Write a copy of *src* to *dst* with the search_path fix applied via
+    ``sed`` (single source of truth with the streaming restore paths). The
+    source file is never modified."""
+
+    sed = _require_tool("sed")
+    with open(dst, "wb") as out:
+        proc = subprocess.run([sed, SEARCH_PATH_SED, str(src)], stdout=out, check=False)
+    if proc.returncode != 0:
+        raise DumpError(f"sed failed filtering {src} for init-script (exit {proc.returncode}).")
+
+
+@contextmanager
+def prepared_init_script(path: Path | None, *, fix_search_path: bool) -> Iterator[Path | None]:
+    """Yield the init-script path to bind-mount. With ``fix_search_path``,
+    yield a ``sed``-filtered temp copy (removed on exit); otherwise yield
+    *path* unchanged. The temp copy must outlive container creation, which is
+    why callers scope this around ``start_containers`` (PG runs the init
+    script before that returns)."""
+
+    if path is None or not fix_search_path:
+        yield path
+        return
+    fd, tmp = tempfile.mkstemp(prefix="run-site-initdb-", suffix=".sql")
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        write_search_path_filtered(path, tmp_path)
+        yield tmp_path
+    finally:
+        # The temp copy may already be gone (e.g. cleaned up elsewhere); that
+        # is the desired end state, not an error.
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+
+
+def _dump_has_empty_search_path(plan: DumpPlan) -> bool:
+    """Peek the dump header for pg_dump's empty-search_path statement. Binary
+    archives generate it at restore time (not present in the raw file), so
+    return True there to suppress the no-op warning."""
+
+    if plan.format is DumpFormat.PG_RESTORE:
+        return True
+    needle = b"set_config('search_path', '', false)"
+    if plan.format is DumpFormat.GZIPPED_SQL:
+        head = _gunzip_prefix(plan.path, 65536)
+    else:
+        head = _read_head(plan.path, 65536)
+    return needle in head

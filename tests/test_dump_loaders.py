@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -233,6 +234,34 @@ def test_resolve_restore_jobs() -> None:
     assert resolve_restore_jobs("auto") >= 1
 
 
+def test_run_pipe_chains_three_stages(tmp_path: Path) -> None:
+    """A 3-stage pipe: each stage's stdout feeds the next stage's stdin.
+    Uses shell tools that are always present: cat | tr | tee."""
+    from run_site.dumps import _run_pipe
+
+    out = tmp_path / "out.txt"
+    src = tmp_path / "in.txt"
+    src.write_text("abc")
+    _run_pipe(
+        [["cat", str(src)], ["tr", "a-z", "A-Z"], ["tee", str(out)]],
+        env=dict(os.environ),
+        fail_fast=True,
+    )
+    assert out.read_text() == "ABC"
+
+
+def test_run_pipe_raises_when_a_stage_fails(tmp_path: Path) -> None:
+    from run_site.dumps import _run_pipe
+    from run_site.errors import DumpError
+
+    with pytest.raises(DumpError, match="Piped restore failed"):
+        _run_pipe(
+            [["cat", str(tmp_path / "does-not-exist")], ["cat"]],
+            env=dict(os.environ),
+            fail_fast=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # execute_post_start progress messages — exercised with subprocess stubs so
 # we never need a real psql / pg_restore / docker on the test host.
@@ -245,7 +274,7 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(argv: Any, *, env: Any, fail_fast: bool) -> None:
         return None
 
-    def fake_run_pipe(left: Any, right: Any, *, env: Any, fail_fast: bool) -> None:
+    def fake_run_pipe(stages: Any, *, env: Any, fail_fast: bool) -> None:
         return None
 
     monkeypatch.setattr("run_site.dumps._run", fake_run)
@@ -432,6 +461,202 @@ def test_build_post_start_argv_uses_restore_source(
     assert restore[-1] == "/tmp/dump"
 
 
+# ---------------------------------------------------------------------------
+# fix_search_path: stream the dump through sed during restore.
+# ---------------------------------------------------------------------------
+
+
+def _with_fix(config: Any) -> Any:
+    from dataclasses import replace
+
+    return replace(config, dump=replace(config.dump, fix_search_path=True))
+
+
+def test_search_path_sed_constant_matches_bpp() -> None:
+    from run_site.dumps import SEARCH_PATH_SED
+
+    assert SEARCH_PATH_SED == (
+        "s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/"
+    )
+
+
+def test_build_plain_sql_fix_pipes_through_sed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert len(argvs) == 1 and isinstance(argvs[0], Pipe)
+    stages = argvs[0].stages
+    assert stages[0][0] == "/fake/bin/sed"
+    assert stages[0][1].startswith("s/set_config('search_path', '', false)")
+    assert str(dump) == stages[0][2]
+    assert stages[-1][0] == "/fake/bin/psql"
+    # No -f file arg on psql — it reads sed's stdout.
+    assert "-f" not in stages[-1]
+
+
+def test_build_plain_sql_without_fix_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- sql\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=minimal_config,
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert argvs == [
+        (
+            "/fake/bin/psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "5432",
+            "-U",
+            "demo",
+            "-d",
+            "demo",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            str(dump),
+        )
+    ]
+
+
+def test_build_gzip_fix_inserts_sed_between_gunzip_and_psql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    dump = tmp_path / "baseline.sql.gz"
+    dump.write_bytes(b"\x1f\x8b\x08\x00")
+    plan = DumpPlan(path=dump, format=DumpFormat.GZIPPED_SQL, strategy="post-start")
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id=None,
+    )
+    assert isinstance(argvs[0], Pipe)
+    labels = [s[0] for s in argvs[0].stages]
+    assert labels == ["gunzip", "/fake/bin/sed", "/fake/bin/psql"]
+
+
+def test_build_binary_fix_streams_pg_restore_through_sed_no_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config
+) -> None:
+    from run_site.dumps import Pipe
+
+    monkeypatch.setattr("run_site.dumps._require_tool", lambda tool: f"/fake/bin/{tool}")
+    plan = DumpPlan(
+        path=tmp_path / "snap.dump", format=DumpFormat.PG_RESTORE, strategy="post-start"
+    )
+    argvs = build_post_start_argv(
+        plan=plan,
+        config=_with_fix(minimal_config),
+        pg_host="127.0.0.1",
+        pg_port=5432,
+        container_id="cid-9",
+        restore_source=tmp_path / "snap.dump",
+    )
+    cp, pipe = argvs
+    assert cp[1] == "cp" and "cid-9:/tmp/dump" in cp
+    assert isinstance(pipe, Pipe)
+    restore_stage = pipe.stages[0]
+    assert "pg_restore" in restore_stage and "-f" in restore_stage and "-" in restore_stage
+    assert "/tmp/dump" in restore_stage
+    # Parallel -j must be gone — sed can only filter a serial text stream.
+    assert "-j" not in restore_stage
+    assert pipe.stages[1][0] == "/fake/bin/sed"
+    assert pipe.stages[-1][0] == "/fake/bin/psql"
+
+
+def test_write_search_path_filtered_rewrites_line(tmp_path: Path) -> None:
+    from run_site.dumps import write_search_path_filtered
+
+    src = tmp_path / "in.sql"
+    src.write_text(
+        "SELECT pg_catalog.set_config('search_path', '', false);\nCREATE TABLE public.t (id int);\n"
+    )
+    dst = tmp_path / "out.sql"
+    write_search_path_filtered(src, dst)
+    text = dst.read_text()
+    assert "set_config('search_path', 'public', false)" in text
+    assert "set_config('search_path', '', false)" not in text
+    assert "CREATE TABLE public.t (id int);" in text
+    # Source file is never modified.
+    assert "set_config('search_path', '', false)" in src.read_text()
+
+
+def test_prepared_init_script_passthrough_when_disabled(tmp_path: Path) -> None:
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("-- x\n")
+    with prepared_init_script(src, fix_search_path=False) as p:
+        assert p == src
+
+
+def test_prepared_init_script_none_passthrough() -> None:
+    from run_site.dumps import prepared_init_script
+
+    with prepared_init_script(None, fix_search_path=True) as p:
+        assert p is None
+
+
+def test_prepared_init_script_filters_and_cleans_up(tmp_path: Path) -> None:
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("SELECT pg_catalog.set_config('search_path', '', false);\n")
+    captured: Path | None = None
+    with prepared_init_script(src, fix_search_path=True) as p:
+        assert p is not None and p != src
+        captured = p
+        assert "set_config('search_path', 'public', false)" in p.read_text()
+    # Temp filtered copy removed on context exit.
+    assert captured is not None and not captured.exists()
+
+
+def test_execute_post_start_warns_on_missing_pattern(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config, caplog
+) -> None:
+    import logging
+    from dataclasses import replace
+
+    _stub_subprocess(monkeypatch)
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- no search_path line here\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    config = replace(minimal_config, dump=replace(minimal_config.dump, fix_search_path=True))
+    with caplog.at_level(logging.WARNING, logger="run_site.dumps"):
+        execute_post_start(
+            plan, config=config, pg_host="127.0.0.1", pg_port=5432, container_id=None
+        )
+    assert any(
+        "no-op" in r.message or "no set_config" in r.message.lower() for r in caplog.records
+    ), caplog.records
+
+
 def _capture_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Record every restore argv instead of shelling out."""
 
@@ -440,8 +665,8 @@ def _capture_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     def fake_run(argv: Any, *, env: Any, fail_fast: bool) -> None:
         calls.append(list(argv))
 
-    def fake_run_pipe(left: Any, right: Any, *, env: Any, fail_fast: bool) -> None:
-        calls.append(["__pipe__", *left, *right])
+    def fake_run_pipe(stages: Any, *, env: Any, fail_fast: bool) -> None:
+        calls.append(["__pipe__", *[tok for stage in stages for tok in stage]])
 
     monkeypatch.setattr("run_site.dumps._run", fake_run)
     monkeypatch.setattr("run_site.dumps._run_pipe", fake_run_pipe)

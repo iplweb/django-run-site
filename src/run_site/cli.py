@@ -39,7 +39,7 @@ from run_site.discovery import (
     is_django_manage_py,
 )
 from run_site.display_detect import HeadlessSignal, detect_headless_session
-from run_site.dumps import execute_post_start, plan_dump
+from run_site.dumps import execute_post_start, plan_dump, prepared_init_script
 from run_site.env import (
     ContainerEndpoints,
     build_subprocess_env,
@@ -290,6 +290,16 @@ def _build_full_parser(
         default=None,
     )
     dump.add_argument("--restore-jobs", type=int, default=None, metavar="N")
+    dump.add_argument(
+        "--fix-search-path",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Stream the dump through sed to restore 'public' to the restore "
+            "search_path (fixes 'operator does not exist: public.hstore = "
+            "public.hstore' on PG16+ restores). Overrides [dump].fix_search_path."
+        ),
+    )
 
     dj = parser.add_argument_group("Django")
     dj.add_argument("--port", type=int, default=None)
@@ -555,7 +565,7 @@ def _execute_run(
     # Decide dump strategy. If init-script, we need the file mounted at PG
     # start, but we don't yet know if PG will be reused. Plan for fresh
     # creation; the post-start branch handles reuse.
-    init_script = _maybe_init_script(config=config, opts=opts)
+    init_script_src = _maybe_init_script(config=config, opts=opts)
 
     sqlite_state: SqliteState | None = None
     if config.sqlite.enabled:
@@ -571,12 +581,18 @@ def _execute_run(
             if warning is not None:
                 mux.write("sqlite", "yellow", f"[sqlite] WARNING: {warning}")
 
-    containers = start_containers(
-        config=config,
-        reuse=opts.reuse,
-        init_script=init_script,
-        progress=mux.write,
-    )
+    # When fix_search_path is on, mount a sed-filtered copy of the init
+    # script. The temp copy must outlive container creation (PG runs the
+    # init script before start_containers returns), so scope it here.
+    with prepared_init_script(
+        init_script_src, fix_search_path=config.dump.fix_search_path
+    ) as init_script:
+        containers = start_containers(
+            config=config,
+            reuse=opts.reuse,
+            init_script=init_script,
+            progress=mux.write,
+        )
     runserver_port = opts.port or find_free_port(config.django.runserver_bind)
     autologin_token = generate_autologin_token()
     # SECRET_KEY: read-or-generate-and-persist under .run-site/secret_key.
@@ -1195,6 +1211,8 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     dump = config.dump
     if opts.restore_jobs is not None:
         dump = replace(dump, restore_jobs=opts.restore_jobs)
+    if opts.fix_search_path is not None:
+        dump = replace(dump, fix_search_path=opts.fix_search_path)
     # Fold [source].no_install into opts.no_install so a single boolean
     # drives venv setup downstream.
     if config.source.no_install and not opts.no_install:

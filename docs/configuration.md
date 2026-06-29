@@ -187,6 +187,7 @@ default_path = "fixtures/baseline.sql"
 strategy = "auto"        # "auto" | "init-script" | "post-start"
 restore_jobs = "auto"    # int or "auto"
 fail_fast = true
+fix_search_path = false  # rewrite empty search_path -> public during restore
 ```
 
 | Strategy | When to use |
@@ -196,6 +197,34 @@ fail_fast = true
 | `post-start` | Always restore via `psql` / `pg_restore` after PG comes up. Works for `.sql`, `.sql.gz`, `.dump`/`.pgdump`, and `pg_dump` directory dumps packaged as `.tar.gz`/`.tgz`. |
 
 `restore_jobs = "auto"` becomes `min(8, os.cpu_count())`.
+
+### `fix_search_path`
+
+`bool`, default `false`. When `true`, the dump is streamed through `sed`
+during restore, applying exactly:
+
+```
+s/set_config('search_path', '', false)/set_config('search_path', 'public', false)/
+```
+
+Modern `pg_dump` hardens its header (post CVE-2018-1058) by setting an
+empty `search_path` for the whole restore session. That breaks restoring
+objects whose definitions resolve `public` operators/types eagerly — most
+commonly an `hstore` comparison in a trigger `WHEN` clause, which fails
+with `operator does not exist: public.hstore = public.hstore` on PG 16+.
+Restoring `public` to the path fixes it (safe, because `pg_dump`
+schema-qualifies every object). The on-disk dump file is never modified —
+the filter is always streamed.
+
+Coverage: applies to plain `.sql` (both `post-start` `psql` and
+`init-script`, where a filtered temp copy is mounted), gzipped `.sql.gz`
+(`gunzip | sed | psql`), and binary archives. For binary archives the
+filter forces `pg_restore -f - | sed | psql`, which **disables parallel
+`-j` restore** (a text filter cannot be applied to a parallel binary
+restore). If the flag is on but the dump header lacks the empty-search_path
+line, run-site logs a warning that the fix is a no-op.
+
+CLI override: `--fix-search-path` / `--no-fix-search-path`.
 
 ## `[env]`
 

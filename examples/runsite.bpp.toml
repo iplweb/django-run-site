@@ -27,6 +27,14 @@ default_path = "src/baseline-sql/baseline.sql"
 strategy = "auto"
 restore_jobs = 8
 fail_fast = true
+# Stream the dump through sed during restore to restore 'public' to the
+# session search_path. Modern pg_dump emits an empty search_path, which
+# breaks restoring objects that resolve public operators/types eagerly
+# (e.g. 'operator does not exist: public.hstore = public.hstore' on PG16+).
+# Off by default; the on-disk dump is never modified. For binary archives
+# this disables parallel -j restore. CLI override: --fix-search-path /
+# --no-fix-search-path.
+fix_search_path = true
 
 [env]
 database_url = "DATABASE_URL"

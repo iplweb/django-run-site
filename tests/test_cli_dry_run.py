@@ -117,9 +117,40 @@ def test_apply_cli_overrides_restore_jobs_overrides_config(
         bind=None,
         restore_jobs=4,
         no_install=False,
+        fix_search_path=None,
     )
     out = _apply_cli_overrides(minimal_config, opts)
     assert out.dump.restore_jobs == 4
+
+
+def test_apply_cli_overrides_fix_search_path(minimal_config) -> None:
+    """--fix-search-path / --no-fix-search-path override config; absence
+    (None) leaves the config value untouched."""
+
+    import argparse
+    from dataclasses import replace
+
+    from run_site.cli import _apply_cli_overrides
+
+    base = {
+        "postgres_image": None,
+        "redis_image": None,
+        "bind": None,
+        "restore_jobs": None,
+        "no_install": False,
+    }
+    # Flag on overrides a config that has it off.
+    on = _apply_cli_overrides(minimal_config, argparse.Namespace(fix_search_path=True, **base))
+    assert on.dump.fix_search_path is True
+
+    # Flag off overrides a config that has it on.
+    cfg_on = replace(minimal_config, dump=replace(minimal_config.dump, fix_search_path=True))
+    off = _apply_cli_overrides(cfg_on, argparse.Namespace(fix_search_path=False, **base))
+    assert off.dump.fix_search_path is False
+
+    # Absent (None) leaves config as-is.
+    unset = _apply_cli_overrides(cfg_on, argparse.Namespace(fix_search_path=None, **base))
+    assert unset.dump.fix_search_path is True
 
 
 def test_apply_cli_overrides_bind_propagates_to_display_host(
@@ -139,6 +170,7 @@ def test_apply_cli_overrides_bind_propagates_to_display_host(
         bind="mac-mini-micha",
         restore_jobs=None,
         no_install=False,
+        fix_search_path=None,
     )
     out = _apply_cli_overrides(minimal_config, opts)
     assert out.django.runserver_bind == "mac-mini-micha"
@@ -161,6 +193,7 @@ def test_apply_cli_overrides_bind_zero_falls_back_to_localhost(
         bind="0.0.0.0",
         restore_jobs=None,
         no_install=False,
+        fix_search_path=None,
     )
     out = _apply_cli_overrides(minimal_config, opts)
     assert out.django.runserver_bind == "0.0.0.0"
@@ -184,6 +217,7 @@ def test_apply_cli_overrides_bind_from_env_var(
         bind=None,
         restore_jobs=None,
         no_install=False,
+        fix_search_path=None,
     )
     out = _apply_cli_overrides(minimal_config, opts)
     assert out.django.runserver_bind == "0.0.0.0"
@@ -206,6 +240,7 @@ def test_apply_cli_overrides_cli_bind_wins_over_env(
         bind="192.168.1.42",
         restore_jobs=None,
         no_install=False,
+        fix_search_path=None,
     )
     out = _apply_cli_overrides(minimal_config, opts)
     assert out.django.runserver_bind == "192.168.1.42"
@@ -229,6 +264,7 @@ def test_apply_cli_overrides_source_no_install_folds_into_opts(
         bind=None,
         restore_jobs=None,
         no_install=False,
+        fix_search_path=None,
     )
     _apply_cli_overrides(cfg, opts)
     assert opts.no_install is True

@@ -130,6 +130,37 @@ def test_init_script_passed_through(minimal_config, tmp_path: Path) -> None:
     assert pg.started[0]["init_script"] == init
 
 
+def test_prepared_init_script_feeds_filtered_copy_to_launcher(
+    minimal_config, tmp_path: Path
+) -> None:
+    """With fix_search_path on, the path handed to the PG launcher is a
+    filtered temp copy whose search_path line is rewritten — and it still
+    exists at launch time (cleanup happens only after start)."""
+    from dataclasses import replace
+
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("SELECT pg_catalog.set_config('search_path', '', false);\n")
+    config = replace(minimal_config, dump=replace(minimal_config.dump, fix_search_path=True))
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    with prepared_init_script(src, fix_search_path=config.dump.fix_search_path) as init_script:
+        start_containers(
+            config=config,
+            reuse=False,
+            init_script=init_script,
+            pg_launcher=pg,
+            redis_launcher=redis,
+        )
+        mounted = pg.started[0]["init_script"]
+        assert mounted is not None and mounted != src
+        assert mounted.exists()  # present while the container is being created
+        assert "set_config('search_path', 'public', false)" in mounted.read_text()
+    assert not mounted.exists()  # removed after the with-block
+
+
 def test_postgres_env_passed(minimal_config, tmp_path: Path) -> None:
     from dataclasses import replace
 
