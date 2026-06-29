@@ -75,6 +75,17 @@ class DumpPlan:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class Pipe:
+    """An N-stage shell-free pipeline: stages[i].stdout -> stages[i+1].stdin.
+
+    Replaces the old ``("__pipe__", *left, *right)`` tuple encoding so a
+    middle ``sed`` filter can sit between ``gunzip``/``pg_restore`` and
+    ``psql``."""
+
+    stages: tuple[Sequence[str], ...]
+
+
 def _read_head(path: Path, n: int) -> bytes:
     with open(path, "rb") as fh:
         return fh.read(n)
@@ -311,7 +322,7 @@ def build_post_start_argv(
     pg_port: int,
     container_id: str | None,
     restore_source: Path | None = None,
-) -> list[Sequence[str]]:
+) -> list[Sequence[str] | Pipe]:
     """Return a list of argv tuples to execute, in order.
 
     For plain/gzipped dumps the only argv is ``psql`` (with ``gunzip`` piped
@@ -349,20 +360,8 @@ def build_post_start_argv(
 
     if plan.format is DumpFormat.GZIPPED_SQL:
         psql = _require_tool("psql")
-        # We rely on the shell-pipe via subprocess.run(shell=True) at the
-        # call site; here we return tokens for the dumps runner to compose.
-        return [
-            (
-                "__pipe__",
-                "gunzip",
-                "-c",
-                str(plan.path),
-                psql,
-                *base_env_args,
-                "-v",
-                "ON_ERROR_STOP=1",
-            )
-        ]
+        psql_argv = (psql, *base_env_args, "-v", "ON_ERROR_STOP=1")
+        return [Pipe(stages=(("gunzip", "-c", str(plan.path)), psql_argv))]
 
     if plan.format is DumpFormat.PG_RESTORE:
         if container_id is None:
@@ -450,7 +449,7 @@ def execute_post_start(
 
 
 def _run_argvs(
-    argvs: list[Sequence[str]],
+    argvs: list[Sequence[str] | Pipe],
     *,
     env: dict[str, str],
     emit: DumpProgressCallback,
@@ -459,19 +458,9 @@ def _run_argvs(
     config: RunSiteConfig,
 ) -> None:
     for argv in argvs:
-        if argv[0] == "__pipe__":
-            # ("__pipe__", *left_argv, *right_argv) — encoded as marker plus
-            # left/right cmd halves separated by "psql".
-            tokens = list(argv[1:])
-            psql_idx = next(i for i, t in enumerate(tokens) if t.endswith("psql"))
-            left = tokens[:psql_idx]
-            right = tokens[psql_idx:]
-            emit(
-                "dump",
-                f"[dump] loading {plan.path.name} ({size_label}) via "
-                f"{Path(left[0]).name} | {Path(right[0]).name}…",
-            )
-            _run_pipe(left, right, env=env, fail_fast=config.dump.fail_fast)
+        if isinstance(argv, Pipe):
+            emit("dump", _describe_pipe(argv, plan=plan, size_label=size_label))
+            _run_pipe(argv.stages, env=env, fail_fast=config.dump.fail_fast)
         else:
             emit("dump", _describe_step(argv, plan=plan, size_label=size_label))
             _run(list(argv), env=env, fail_fast=config.dump.fail_fast)
@@ -487,32 +476,43 @@ def _run(argv: Sequence[str], *, env: dict[str, str], fail_fast: bool) -> None:
 
 
 def _run_pipe(
-    left: Sequence[str],
-    right: Sequence[str],
+    stages: Sequence[Sequence[str]],
     *,
     env: dict[str, str],
     fail_fast: bool,
 ) -> None:
-    left_proc = subprocess.Popen(list(left), env=env, stdout=subprocess.PIPE)
-    try:
-        right_proc = subprocess.run(
-            list(right),
-            env=env,
-            stdin=left_proc.stdout,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        if left_proc.stdout is not None:
-            left_proc.stdout.close()
-        left_proc.wait()
-    if (left_proc.returncode != 0 or right_proc.returncode != 0) and fail_fast:
+    """Run ``stages`` as a pipeline: each stage's stdout is the next stage's
+    stdin. The final stage's stdout/stderr are captured for error reporting.
+    Raises :class:`DumpError` if any stage exits non-zero and ``fail_fast``
+    is set (pipefail semantics)."""
+
+    if not stages:
+        return
+    procs: list[subprocess.Popen[bytes]] = []
+    prev_stdout = None
+    for stage in stages[:-1]:
+        proc = subprocess.Popen(list(stage), env=env, stdin=prev_stdout, stdout=subprocess.PIPE)
+        if prev_stdout is not None:
+            # Parent closes its copy so a downstream exit propagates SIGPIPE.
+            prev_stdout.close()
+        procs.append(proc)
+        prev_stdout = proc.stdout
+    last = subprocess.run(
+        list(stages[-1]),
+        env=env,
+        stdin=prev_stdout,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if prev_stdout is not None:
+        prev_stdout.close()
+    codes = [(list(stage), proc.wait()) for stage, proc in zip(stages[:-1], procs, strict=True)]
+    codes.append((list(stages[-1]), last.returncode))
+    if any(rc != 0 for _, rc in codes) and fail_fast:
+        detail = "\n".join(f"  exit {rc}: {argv}" for argv, rc in codes)
         raise DumpError(
-            f"Piped restore failed: left={left_proc.returncode} "
-            f"right={right_proc.returncode}\n"
-            f"left argv: {list(left)}\nright argv: {list(right)}\n"
-            f"stdout:\n{right_proc.stdout}\nstderr:\n{right_proc.stderr}"
+            f"Piped restore failed:\n{detail}\nstdout:\n{last.stdout}\nstderr:\n{last.stderr}"
         )
 
 
@@ -536,6 +536,18 @@ def _format_size(path: Path) -> str:
             return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} TB"
+
+
+def _pipe_stage_label(stage: Sequence[str]) -> str:
+    head = Path(stage[0]).name
+    if head == "docker" and "pg_restore" in stage:
+        return "pg_restore"
+    return head
+
+
+def _describe_pipe(pipe: Pipe, *, plan: DumpPlan, size_label: str) -> str:
+    names = " | ".join(_pipe_stage_label(s) for s in pipe.stages)
+    return f"[dump] loading {plan.path.name} ({size_label}) via {names}…"
 
 
 def _describe_step(argv: Sequence[str], *, plan: DumpPlan, size_label: str) -> str:

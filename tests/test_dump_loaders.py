@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -233,6 +234,34 @@ def test_resolve_restore_jobs() -> None:
     assert resolve_restore_jobs("auto") >= 1
 
 
+def test_run_pipe_chains_three_stages(tmp_path: Path) -> None:
+    """A 3-stage pipe: each stage's stdout feeds the next stage's stdin.
+    Uses shell tools that are always present: cat | tr | tee."""
+    from run_site.dumps import _run_pipe
+
+    out = tmp_path / "out.txt"
+    src = tmp_path / "in.txt"
+    src.write_text("abc")
+    _run_pipe(
+        [["cat", str(src)], ["tr", "a-z", "A-Z"], ["tee", str(out)]],
+        env=dict(os.environ),
+        fail_fast=True,
+    )
+    assert out.read_text() == "ABC"
+
+
+def test_run_pipe_raises_when_a_stage_fails(tmp_path: Path) -> None:
+    from run_site.dumps import _run_pipe
+    from run_site.errors import DumpError
+
+    with pytest.raises(DumpError, match="Piped restore failed"):
+        _run_pipe(
+            [["cat", str(tmp_path / "does-not-exist")], ["cat"]],
+            env=dict(os.environ),
+            fail_fast=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # execute_post_start progress messages — exercised with subprocess stubs so
 # we never need a real psql / pg_restore / docker on the test host.
@@ -245,7 +274,7 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(argv: Any, *, env: Any, fail_fast: bool) -> None:
         return None
 
-    def fake_run_pipe(left: Any, right: Any, *, env: Any, fail_fast: bool) -> None:
+    def fake_run_pipe(stages: Any, *, env: Any, fail_fast: bool) -> None:
         return None
 
     monkeypatch.setattr("run_site.dumps._run", fake_run)
@@ -440,8 +469,8 @@ def _capture_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     def fake_run(argv: Any, *, env: Any, fail_fast: bool) -> None:
         calls.append(list(argv))
 
-    def fake_run_pipe(left: Any, right: Any, *, env: Any, fail_fast: bool) -> None:
-        calls.append(["__pipe__", *left, *right])
+    def fake_run_pipe(stages: Any, *, env: Any, fail_fast: bool) -> None:
+        calls.append(["__pipe__", *[tok for stage in stages for tok in stage]])
 
     monkeypatch.setattr("run_site.dumps._run", fake_run)
     monkeypatch.setattr("run_site.dumps._run_pipe", fake_run_pipe)
