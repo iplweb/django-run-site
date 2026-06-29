@@ -30,7 +30,7 @@ import subprocess
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -459,6 +459,14 @@ def execute_post_start(
     emit = progress or _noop_dump_progress
     size_label = _format_size(plan.path)
 
+    if config.dump.fix_search_path and not _dump_has_empty_search_path(plan):
+        logger.warning(
+            "fix_search_path is enabled but %s's header has no "
+            "set_config('search_path', '', false) line — the fix is a no-op "
+            "(the dump format may have changed).",
+            plan.path.name,
+        )
+
     if plan.format is DumpFormat.PG_RESTORE:
         # Peel any outer gzip/tar wrapper to a path pg_restore can read; the
         # temp extraction (if any) lives only for the duration of the restore.
@@ -616,3 +624,54 @@ def _require_tool(tool: str) -> str:
     if path is None:
         raise DumpError(f"{tool!r} not found on PATH; install it to load this dump format.")
     return path
+
+
+def write_search_path_filtered(src: Path, dst: Path) -> None:
+    """Write a copy of *src* to *dst* with the search_path fix applied via
+    ``sed`` (single source of truth with the streaming restore paths). The
+    source file is never modified."""
+
+    sed = _require_tool("sed")
+    with open(dst, "wb") as out:
+        proc = subprocess.run([sed, SEARCH_PATH_SED, str(src)], stdout=out, check=False)
+    if proc.returncode != 0:
+        raise DumpError(f"sed failed filtering {src} for init-script (exit {proc.returncode}).")
+
+
+@contextmanager
+def prepared_init_script(path: Path | None, *, fix_search_path: bool) -> Iterator[Path | None]:
+    """Yield the init-script path to bind-mount. With ``fix_search_path``,
+    yield a ``sed``-filtered temp copy (removed on exit); otherwise yield
+    *path* unchanged. The temp copy must outlive container creation, which is
+    why callers scope this around ``start_containers`` (PG runs the init
+    script before that returns)."""
+
+    if path is None or not fix_search_path:
+        yield path
+        return
+    fd, tmp = tempfile.mkstemp(prefix="run-site-initdb-", suffix=".sql")
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        write_search_path_filtered(path, tmp_path)
+        yield tmp_path
+    finally:
+        # The temp copy may already be gone (e.g. cleaned up elsewhere); that
+        # is the desired end state, not an error.
+        with suppress(FileNotFoundError):
+            tmp_path.unlink()
+
+
+def _dump_has_empty_search_path(plan: DumpPlan) -> bool:
+    """Peek the dump header for pg_dump's empty-search_path statement. Binary
+    archives generate it at restore time (not present in the raw file), so
+    return True there to suppress the no-op warning."""
+
+    if plan.format is DumpFormat.PG_RESTORE:
+        return True
+    needle = b"set_config('search_path', '', false)"
+    if plan.format is DumpFormat.GZIPPED_SQL:
+        head = _gunzip_prefix(plan.path, 65536)
+    else:
+        head = _read_head(plan.path, 65536)
+    return needle in head

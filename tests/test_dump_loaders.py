@@ -590,6 +590,73 @@ def test_build_binary_fix_streams_pg_restore_through_sed_no_jobs(
     assert pipe.stages[-1][0] == "/fake/bin/psql"
 
 
+def test_write_search_path_filtered_rewrites_line(tmp_path: Path) -> None:
+    from run_site.dumps import write_search_path_filtered
+
+    src = tmp_path / "in.sql"
+    src.write_text(
+        "SELECT pg_catalog.set_config('search_path', '', false);\nCREATE TABLE public.t (id int);\n"
+    )
+    dst = tmp_path / "out.sql"
+    write_search_path_filtered(src, dst)
+    text = dst.read_text()
+    assert "set_config('search_path', 'public', false)" in text
+    assert "set_config('search_path', '', false)" not in text
+    assert "CREATE TABLE public.t (id int);" in text
+    # Source file is never modified.
+    assert "set_config('search_path', '', false)" in src.read_text()
+
+
+def test_prepared_init_script_passthrough_when_disabled(tmp_path: Path) -> None:
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("-- x\n")
+    with prepared_init_script(src, fix_search_path=False) as p:
+        assert p == src
+
+
+def test_prepared_init_script_none_passthrough() -> None:
+    from run_site.dumps import prepared_init_script
+
+    with prepared_init_script(None, fix_search_path=True) as p:
+        assert p is None
+
+
+def test_prepared_init_script_filters_and_cleans_up(tmp_path: Path) -> None:
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("SELECT pg_catalog.set_config('search_path', '', false);\n")
+    captured: Path | None = None
+    with prepared_init_script(src, fix_search_path=True) as p:
+        assert p is not None and p != src
+        captured = p
+        assert "set_config('search_path', 'public', false)" in p.read_text()
+    # Temp filtered copy removed on context exit.
+    assert captured is not None and not captured.exists()
+
+
+def test_execute_post_start_warns_on_missing_pattern(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config, caplog
+) -> None:
+    import logging
+    from dataclasses import replace
+
+    _stub_subprocess(monkeypatch)
+    dump = tmp_path / "baseline.sql"
+    dump.write_text("-- no search_path line here\n")
+    plan = DumpPlan(path=dump, format=DumpFormat.PLAIN_SQL, strategy="post-start")
+    config = replace(minimal_config, dump=replace(minimal_config.dump, fix_search_path=True))
+    with caplog.at_level(logging.WARNING, logger="run_site.dumps"):
+        execute_post_start(
+            plan, config=config, pg_host="127.0.0.1", pg_port=5432, container_id=None
+        )
+    assert any(
+        "no-op" in r.message or "no set_config" in r.message.lower() for r in caplog.records
+    ), caplog.records
+
+
 def _capture_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Record every restore argv instead of shelling out."""
 
