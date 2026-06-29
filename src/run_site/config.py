@@ -106,6 +106,7 @@ class DumpConfig:
     strategy: DumpStrategy = "auto"
     restore_jobs: int | str = "auto"
     fail_fast: bool = True
+    fix_search_path: bool = False
 
 
 @dataclass(frozen=True)
@@ -593,6 +594,7 @@ def _build_dump(raw: Mapping[str, Any]) -> DumpConfig:
         strategy=strategy,  # type: ignore[arg-type]
         restore_jobs=restore_jobs_raw,
         fail_fast=_bool(raw, "fail_fast", default=True),
+        fix_search_path=_bool(raw, "fix_search_path", default=False),
     )
 
 

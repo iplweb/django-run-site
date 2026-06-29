@@ -114,6 +114,27 @@ def test_invalid_dump_strategy_rejected(tmp_path: Path) -> None:
         load_config(config_path=cfg, project_root=tmp_path)
 
 
+def test_dump_fix_search_path_defaults_false(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.dump.fix_search_path is False
+
+
+def test_dump_fix_search_path_parsed(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[dump]\nfix_search_path = true\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.dump.fix_search_path is True
+
+
+def test_dump_fix_search_path_must_be_bool(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[dump]\nfix_search_path = "yes"\n')
+    with pytest.raises(ConfigError):
+        load_config(config_path=cfg, project_root=tmp_path)
+
+
 def test_invalid_postgres_driver_rejected(tmp_path: Path) -> None:
     cfg = tmp_path / "runsite.toml"
     cfg.write_text('project_slug = "x"\n[postgres]\ndriver = "tcp"\n')
