@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] — 2026-06-29
+
+### Added
+
+- **`[dump].fix_search_path`** — opt-in flag that streams the dump through
+  `sed` during restore to rewrite pg_dump's hardened empty `search_path`
+  (`set_config('search_path', '', false)`) back to `public`. Fixes restores
+  that fail with `operator does not exist: public.hstore = public.hstore` on
+  PG 16+ (e.g. an `hstore` comparison in a trigger `WHEN` clause). Covers
+  plain `.sql` (post-start and `init-script`, where a filtered temp copy is
+  mounted), gzipped `.sql.gz`, and binary `pg_restore` archives; for binary
+  archives it streams `pg_restore -f - | sed | psql`, which disables parallel
+  `-j` restore. The on-disk dump is never modified. CLI overrides:
+  `--fix-search-path` / `--no-fix-search-path`.
+- **Live progress bar for dump restores** — when [`pv`](https://www.ivarch.com/programs/pv.shtml)
+  is installed and run-site's output is an interactive terminal, post-start
+  restores of plain `.sql` and gzipped `.sql.gz` dumps show a `pv` progress
+  bar (the dump is streamed `pv file | … | psql`). Automatic, zero-config, and
+  silently absent when `pv` is missing or output is non-interactive (CI,
+  piped, headless). Binary `pg_restore` archives and `init-script` restores do
+  not show a bar.
+
+### Changed
+
+- The post-start restore pipeline is now an N-stage pipe internally, so
+  `gunzip`, `pv`, and `sed` can be composed between the dump source and
+  `psql`.
+
 ## [0.16.4] — 2026-06-29
 
 ### Fixed
