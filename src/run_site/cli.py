@@ -290,6 +290,16 @@ def _build_full_parser(
         default=None,
     )
     dump.add_argument("--restore-jobs", type=int, default=None, metavar="N")
+    dump.add_argument(
+        "--fix-search-path",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Stream the dump through sed to restore 'public' to the restore "
+            "search_path (fixes 'operator does not exist: public.hstore = "
+            "public.hstore' on PG16+ restores). Overrides [dump].fix_search_path."
+        ),
+    )
 
     dj = parser.add_argument_group("Django")
     dj.add_argument("--port", type=int, default=None)
@@ -1195,6 +1205,8 @@ def _apply_cli_overrides(config: RunSiteConfig, opts: argparse.Namespace) -> Run
     dump = config.dump
     if opts.restore_jobs is not None:
         dump = replace(dump, restore_jobs=opts.restore_jobs)
+    if opts.fix_search_path is not None:
+        dump = replace(dump, fix_search_path=opts.fix_search_path)
     # Fold [source].no_install into opts.no_install so a single boolean
     # drives venv setup downstream.
     if config.source.no_install and not opts.no_install:
