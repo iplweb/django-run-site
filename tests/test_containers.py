@@ -21,6 +21,7 @@ class FakePgLauncher(PostgresLauncher):
     def __init__(self, *, found: tuple[str, str, int] | None = None) -> None:
         self.started: list[dict] = []
         self.stopped: list[str] = []
+        self.stop_remove_volumes: list[bool] = []
         self.found = found
 
     def start(self, *, image, user, password, db, env, name, init_script) -> tuple[str, str, int]:
@@ -40,8 +41,9 @@ class FakePgLauncher(PostgresLauncher):
     def find_existing(self, name: str) -> tuple[str, str, int] | None:
         return self.found
 
-    def stop(self, container_id: str) -> None:
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         self.stopped.append(container_id)
+        self.stop_remove_volumes.append(remove_volumes)
 
     def stream_logs_argv(self, container_id: str) -> tuple[str, ...]:
         return ("docker", "logs", "-f", container_id)
@@ -51,6 +53,7 @@ class FakeRedisLauncher(RedisLauncher):
     def __init__(self, *, found: tuple[str, str, int] | None = None) -> None:
         self.started: list[dict] = []
         self.stopped: list[str] = []
+        self.stop_remove_volumes: list[bool] = []
         self.found = found
 
     def start(self, *, image, name) -> tuple[str, str, int]:
@@ -60,8 +63,9 @@ class FakeRedisLauncher(RedisLauncher):
     def find_existing(self, name: str) -> tuple[str, str, int] | None:
         return self.found
 
-    def stop(self, container_id: str) -> None:
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         self.stopped.append(container_id)
+        self.stop_remove_volumes.append(remove_volumes)
 
 
 def test_start_containers_fresh(minimal_config) -> None:
@@ -215,7 +219,7 @@ def test_redis_failure_rolls_back_pg(minimal_config) -> None:
         def find_existing(self, name: str) -> tuple[str, str, int] | None:
             return None
 
-        def stop(self, container_id: str) -> None:
+        def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
             pass
 
     import pytest
@@ -230,6 +234,7 @@ def test_redis_failure_rolls_back_pg(minimal_config) -> None:
         )
     # PG was stopped during rollback even though start_containers raised.
     assert pg.stopped == ["pg-cid"]
+    assert pg.stop_remove_volumes == [True]
 
 
 def test_redis_failure_does_not_stop_pg_when_attached(minimal_config) -> None:
@@ -245,7 +250,7 @@ def test_redis_failure_does_not_stop_pg_when_attached(minimal_config) -> None:
         def find_existing(self, name: str) -> tuple[str, str, int] | None:
             return None
 
-        def stop(self, container_id: str) -> None:
+        def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
             pass
 
     import pytest
@@ -279,6 +284,82 @@ def test_stop_containers_runs_stops_when_not_reuse() -> None:
     stop_containers(containers, pg_launcher=pg, redis_launcher=redis)
     assert pg.stopped == ["pg"]
     assert redis.stopped == ["redis"]
+
+
+def test_stop_containers_removes_volumes_by_default() -> None:
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    containers = RunSiteContainers(
+        pg_host="127.0.0.1",
+        pg_port=1,
+        pg_container_id="pg",
+        pg_created=True,
+        redis_host="127.0.0.1",
+        redis_port=2,
+        redis_container_id="redis",
+        redis_created=True,
+        reuse=False,
+    )
+    stop_containers(containers, pg_launcher=pg, redis_launcher=redis)
+    assert pg.stop_remove_volumes == [True]
+    assert redis.stop_remove_volumes == [True]
+
+
+def test_stop_containers_forwards_remove_volumes_false() -> None:
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    containers = RunSiteContainers(
+        pg_host="127.0.0.1",
+        pg_port=1,
+        pg_container_id="pg",
+        pg_created=True,
+        redis_host="127.0.0.1",
+        redis_port=2,
+        redis_container_id="redis",
+        redis_created=True,
+        reuse=False,
+    )
+    stop_containers(containers, pg_launcher=pg, redis_launcher=redis, remove_volumes=False)
+    assert pg.stopped == ["pg"]
+    assert redis.stopped == ["redis"]
+    assert pg.stop_remove_volumes == [False]
+    assert redis.stop_remove_volumes == [False]
+
+
+def test_rollback_honors_remove_volumes_knob(minimal_config) -> None:
+    """When Redis fails after PG started and the knob is off, the PG
+    rollback must not delete volumes either."""
+
+    from dataclasses import replace
+
+    import pytest
+
+    config = replace(
+        minimal_config,
+        containers=replace(minimal_config.containers, remove_volumes=False),
+    )
+    pg = FakePgLauncher()
+
+    class FailingRedis(RedisLauncher):
+        def start(self, *, image, name) -> tuple[str, str, int]:
+            raise RuntimeError("simulated redis boom")
+
+        def find_existing(self, name: str) -> tuple[str, str, int] | None:
+            return None
+
+        def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
+            pass
+
+    with pytest.raises(RuntimeError, match="simulated redis boom"):
+        start_containers(
+            config=config,
+            reuse=False,
+            init_script=None,
+            pg_launcher=pg,
+            redis_launcher=FailingRedis(),
+        )
+    assert pg.stopped == ["pg-cid"]
+    assert pg.stop_remove_volumes == [False]
 
 
 def test_start_containers_skips_postgres_when_disabled(minimal_config) -> None:

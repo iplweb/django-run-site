@@ -76,7 +76,7 @@ class PostgresLauncher(Protocol):
 
     def find_existing(self, name: str) -> tuple[str, str, int] | None: ...
 
-    def stop(self, container_id: str) -> None: ...
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None: ...
 
     def stream_logs_argv(self, container_id: str) -> tuple[str, ...]: ...
 
@@ -86,7 +86,7 @@ class RedisLauncher(Protocol):
 
     def find_existing(self, name: str) -> tuple[str, str, int] | None: ...
 
-    def stop(self, container_id: str) -> None: ...
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ class TestcontainersPostgres:
         port = _published_port(container, 5432)
         return container.id, host, port
 
-    def stop(self, container_id: str) -> None:
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         wrapped = self._containers.pop(container_id, None)
         if wrapped is not None:
             with suppress(Exception):
@@ -222,7 +222,7 @@ class TestcontainersRedis:
         port = _published_port(container, 6379)
         return container.id, host, port
 
-    def stop(self, container_id: str) -> None:
+    def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         wrapped = self._containers.pop(container_id, None)
         if wrapped is not None:
             with suppress(Exception):
@@ -352,7 +352,7 @@ def start_containers(
         # us to attach to via reuse.
         if pg_created and pg_id is not None:
             with suppress(Exception):
-                pg_launcher.stop(pg_id)
+                pg_launcher.stop(pg_id, remove_volumes=config.containers.remove_volumes)
         raise
 
     return RunSiteContainers(
@@ -374,11 +374,14 @@ def stop_containers(
     pg_launcher: PostgresLauncher | None = None,
     redis_launcher: RedisLauncher | None = None,
     force: bool = False,
+    remove_volumes: bool = True,
 ) -> None:
     """Stop both containers unless ``reuse=True``, in which case leave them.
 
     A ``None`` container id means the service was disabled and never
-    started — nothing to stop.
+    started — nothing to stop. ``remove_volumes`` removes the anonymous
+    volumes together with each container; ``force=True`` (the reuse
+    override) honors it the same way.
     """
 
     if containers.reuse and not force:
@@ -387,10 +390,10 @@ def stop_containers(
     redis_launcher = redis_launcher or TestcontainersRedis()
     if containers.pg_container_id is not None:
         with suppress(Exception):
-            pg_launcher.stop(containers.pg_container_id)
+            pg_launcher.stop(containers.pg_container_id, remove_volumes=remove_volumes)
     if containers.redis_container_id is not None:
         with suppress(Exception):
-            redis_launcher.stop(containers.redis_container_id)
+            redis_launcher.stop(containers.redis_container_id, remove_volumes=remove_volumes)
 
 
 def assert_docker_available() -> None:
