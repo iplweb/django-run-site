@@ -650,7 +650,7 @@ def _execute_run(
             # user asked to keep them alive for reuse.
             if not opts.reuse:
                 with _suppress():
-                    stop_containers(containers)
+                    stop_containers(containers, remove_volumes=config.containers.remove_volumes)
                 with _suppress():
                     cleanup_sqlite(sqlite_state)
             return 0
@@ -1042,7 +1042,7 @@ def _execute_run(
     except Exception:
         proc_group.terminate_all()
         with _suppress():
-            stop_containers(containers)
+            stop_containers(containers, remove_volumes=config.containers.remove_volumes)
         with _suppress():
             cleanup_sqlite(sqlite_state)
         with _suppress():
@@ -1079,7 +1079,7 @@ def _shutdown(
         )
     if not opts.reuse:
         with _suppress():
-            stop_containers(containers)
+            stop_containers(containers, remove_volumes=config.containers.remove_volumes)
         with _suppress():
             cleanup_sqlite(sqlite_state)
     with _suppress():
