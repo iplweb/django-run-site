@@ -1,4 +1,4 @@
-# Shutdown container/volume report — design
+# Shutdown container/volume report + deterministic container names — design
 
 Date: 2026-07-06
 Status: approved
@@ -10,6 +10,11 @@ PostgreSQL and Redis containers — and, since v0.18.0, their anonymous
 volumes — are removed without any message. The user cannot tell what was
 deleted, and in `--reuse` / `remove_volumes = false` runs cannot tell what
 was intentionally left behind on disk.
+
+Additionally, containers only get a meaningful name in `--reuse` mode
+(`{project_slug}-runsite-pg`); in the default mode `name=None` is passed
+and Docker assigns a random name like `sharp_ptolemy`, so the user cannot
+tell in `docker ps` which containers belong to which run-site run.
 
 ## Goal
 
@@ -23,6 +28,9 @@ After shutdown, `run-site` reports per service:
 Full report was chosen over "deletions only": the user always learns what
 happened, including what remains on disk.
 
+Secondary goal: containers are always named, in every mode, so both
+`docker ps` and the shutdown report show identifiable names.
+
 ## Non-goals
 
 - Changing any deletion behavior. This is reporting only; the existing
@@ -35,6 +43,28 @@ happened, including what remains on disk.
   them, so there is nothing to report.
 
 ## Design
+
+### Container naming (all modes)
+
+`start_containers()` names both containers in every mode:
+
+- `--reuse` (unchanged): `{project_slug}-runsite-pg` /
+  `{project_slug}-runsite-redis` — deterministic, so `find_existing`
+  keeps locating them across runs.
+- default mode (new): `{project_slug}-runsite-pg-{suffix}` /
+  `{project_slug}-runsite-redis-{suffix}`, where `suffix` is one random
+  6-char lowercase hex string generated once per `start_containers()`
+  call and shared by both services. The shared suffix makes it obvious in
+  `docker ps` which PG/Redis pair belongs to the same run, and uniqueness
+  prevents name collisions between concurrent run-site instances of the
+  same project (and with stale containers left by a crash).
+
+`find_existing` is still only consulted in reuse mode — suffixed names
+are fresh by construction. Chosen over a PID suffix (possible collision
+with a stale container after PID recycling) and over a bare slug
+(guaranteed collision for two concurrent runs).
+
+### Shutdown report
 
 Approach: report from `stop_containers()` via a `progress` callback
 (chosen over reporting inside the launchers, which would change the
@@ -91,22 +121,22 @@ volume names truncated to 12 chars.
 Normal ctrl+c (`remove_volumes = true`, default):
 
 ```
-[docker] postgres: removed container run-site-pg-myproj (a1b2c3d4e5f6)
+[docker] postgres: removed container myproj-runsite-pg-3f9a2c (a1b2c3d4e5f6)
 [docker] postgres: removed anonymous volume 4f5e6d7c8b9a…
-[docker] redis: removed container run-site-redis-myproj (0f1e2d3c4b5a)
+[docker] redis: removed container myproj-runsite-redis-3f9a2c (0f1e2d3c4b5a)
 ```
 
 `--reuse`:
 
 ```
-[docker] postgres: left running (reuse) — container run-site-pg-myproj (a1b2c3d4e5f6)
-[docker] redis: left running (reuse) — container run-site-redis-myproj (0f1e2d3c4b5a)
+[docker] postgres: left running (reuse) — container myproj-runsite-pg (a1b2c3d4e5f6)
+[docker] redis: left running (reuse) — container myproj-runsite-redis (0f1e2d3c4b5a)
 ```
 
 `remove_volumes = false`:
 
 ```
-[docker] postgres: removed container run-site-pg-myproj (a1b2c3d4e5f6)
+[docker] postgres: removed container myproj-runsite-pg-3f9a2c (a1b2c3d4e5f6)
 [docker] postgres: kept volume 4f5e6d7c8b9a… (remove_volumes=false)
 ```
 
@@ -146,6 +176,13 @@ Unit tests (no Docker), using fake launchers plus a fake inspector:
 - rollback path in `start_containers` (Redis start fails) → PG cleanup
   reported through `emit`.
 
+Naming unit tests (fake launchers record the `name` argument):
+
+- default mode → both launchers receive `{slug}-runsite-{svc}-{suffix}`
+  with the same 6-char hex suffix for PG and Redis,
+- two consecutive `start_containers()` calls → different suffixes,
+- `reuse=True` → unchanged deterministic names, no suffix.
+
 One `docker`-marked integration test: start a real stack, stop it with a
 recording progress callback, assert the lines mention the real PG
 container name and at least one anonymous volume.
@@ -154,5 +191,7 @@ container name and at least one anonymous volume.
 
 - `docs/configuration.md` / `docs/troubleshooting.md`: note that shutdown
   prints what was removed/kept, and how `--reuse` /
-  `[containers].remove_volumes` change the message.
+  `[containers].remove_volumes` change the message; document the container
+  naming scheme (`{slug}-runsite-{svc}` in reuse mode,
+  `{slug}-runsite-{svc}-{suffix}` otherwise).
 - CHANGELOG entry for the next release.
