@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] — 2026-07-06
+
+### Added
+
+- **`[containers].remove_volumes`** — new config knob (default `true`)
+  controlling whether the anonymous Docker volumes attached to the PG/Redis
+  test containers are deleted together with the containers when run-site
+  tears the stack down. `docker rm -v` semantics: Docker removes exactly the
+  anonymous volumes it attached to run-site's own containers; named volumes
+  and bind mounts are never touched. Set to `false` only for post-mortem
+  inspection of a container's data — keeping data between runs is what
+  `--reuse` is for. The knob only governs run-site's own teardown: after a
+  hard kill (SIGKILL, closed terminal) Ryuk removes the containers
+  *including* their anonymous volumes regardless; combine with
+  `ryuk = false` for volumes that must survive that too.
+
+### Fixed
+
+- **Every non-reuse run leaked two anonymous Docker volumes.** The
+  `postgres` and `redis` images declare `VOLUME` directives
+  (`/var/lib/postgresql/data`, `/data`), and the shutdown path removed the
+  containers without `-v`, so their anonymous volumes were orphaned on every
+  graceful (Ctrl+C) shutdown and silently accumulated on disk. Containers
+  are now removed together with their anonymous volumes by default (see
+  `[containers].remove_volumes` above). Historical orphans are unlabeled and
+  cannot be attributed to run-site — clean them up once with
+  `docker volume prune` (note: touches *all* dangling anonymous volumes on
+  the machine).
+- A failure in the graceful `container.stop()` during shutdown no longer
+  silently skips container removal — removal proceeds with `force=True` and
+  the failure is logged.
+
 ## [0.17.0] — 2026-06-29
 
 ### Added
