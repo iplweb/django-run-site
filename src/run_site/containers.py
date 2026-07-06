@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import secrets
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -32,6 +34,20 @@ ProgressCallback = Callable[[str, str, str], None]
 # place so the banner / tests / wiring all agree on the visual identity.
 _DOCKER_STREAM = "docker"
 _DOCKER_COLOR = "blue"
+
+
+# Anonymous volumes are the ones Docker itself named: 64 hex chars. Named
+# volumes and bind mounts never match, so `docker rm -v` semantics and this
+# report agree on what gets deleted.
+_ANONYMOUS_VOLUME_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class ContainerInspection:
+    """Pre-removal snapshot backing the shutdown report."""
+
+    name: str | None
+    anonymous_volumes: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -271,13 +287,23 @@ def start_containers(
     _ensure_docker_host_env()
     _apply_ryuk_policy(config, reuse)
 
+    # Reuse mode needs deterministic names so find_existing can locate the
+    # stack across runs. Fresh runs get a per-run suffix shared by both
+    # services: identifiable in `docker ps`, yet collision-free when two
+    # run-site instances of the same project run side by side.
+    run_suffix = secrets.token_hex(3)
+
     pg_id: str | None = None
     pg_host: str | None = None
     pg_port: int | None = None
     pg_created: bool | None = None
     if config.postgres.enabled:
-        pg_name = f"{config.project_slug}-runsite-pg" if reuse else None
-        pg_existing = pg_launcher.find_existing(pg_name) if pg_name else None
+        pg_name = (
+            f"{config.project_slug}-runsite-pg"
+            if reuse
+            else f"{config.project_slug}-runsite-pg-{run_suffix}"
+        )
+        pg_existing = pg_launcher.find_existing(pg_name) if reuse else None
         if pg_existing is not None:
             pg_id, pg_host, pg_port = pg_existing
             pg_created = False
@@ -315,8 +341,12 @@ def start_containers(
     redis_created: bool | None = None
     try:
         if config.redis.enabled:
-            redis_name = f"{config.project_slug}-runsite-redis" if reuse else None
-            redis_existing = redis_launcher.find_existing(redis_name) if redis_name else None
+            redis_name = (
+                f"{config.project_slug}-runsite-redis"
+                if reuse
+                else f"{config.project_slug}-runsite-redis-{run_suffix}"
+            )
+            redis_existing = redis_launcher.find_existing(redis_name) if reuse else None
             if redis_existing is not None:
                 redis_id, redis_host, redis_port = redis_existing
                 redis_created = False
@@ -349,8 +379,17 @@ def start_containers(
         # what we created — never tear down a container the caller asked
         # us to attach to via reuse.
         if pg_created and pg_id is not None:
+            created_pg_id = pg_id
             with suppress(Exception):
-                pg_launcher.stop(pg_id, remove_volumes=config.containers.remove_volumes)
+                _stop_and_report(
+                    service="postgres",
+                    container_id=created_pg_id,
+                    stop_fn=lambda: pg_launcher.stop(
+                        created_pg_id, remove_volumes=config.containers.remove_volumes
+                    ),
+                    remove_volumes=config.containers.remove_volumes,
+                    progress=progress,
+                )
         raise
 
     return RunSiteContainers(
@@ -373,6 +412,7 @@ def stop_containers(
     redis_launcher: RedisLauncher | None = None,
     force: bool = False,
     remove_volumes: bool = True,
+    progress: ProgressCallback | None = None,
 ) -> None:
     """Stop both containers unless ``reuse=True``, in which case leave them.
 
@@ -380,18 +420,48 @@ def stop_containers(
     started — nothing to stop. ``remove_volumes`` removes the anonymous
     volumes together with each container; ``force=True`` (the reuse
     override) honors it the same way.
+
+    ``progress`` (pass ``mux.write``) surfaces a shutdown report: which
+    containers/anonymous volumes were removed, or what was left behind
+    (reuse / ``remove_volumes=false``). Omit to keep teardown silent.
     """
 
     if containers.reuse and not force:
+        if progress is not None:
+            for service, container_id in (
+                ("postgres", containers.pg_container_id),
+                ("redis", containers.redis_container_id),
+            ):
+                if container_id is None:
+                    continue
+                info = _inspect_container(container_id)
+                label = _container_label(info.name if info else None, container_id)
+                progress(
+                    _DOCKER_STREAM,
+                    _DOCKER_COLOR,
+                    f"[docker] {service}: left running (reuse) — container {label}",
+                )
         return
-    pg_launcher = pg_launcher or TestcontainersPostgres()
-    redis_launcher = redis_launcher or TestcontainersRedis()
-    if containers.pg_container_id is not None:
-        with suppress(Exception):
-            pg_launcher.stop(containers.pg_container_id, remove_volumes=remove_volumes)
-    if containers.redis_container_id is not None:
-        with suppress(Exception):
-            redis_launcher.stop(containers.redis_container_id, remove_volumes=remove_volumes)
+    pg = pg_launcher or TestcontainersPostgres()
+    redis = redis_launcher or TestcontainersRedis()
+    pg_cid = containers.pg_container_id
+    if pg_cid is not None:
+        _stop_and_report(
+            service="postgres",
+            container_id=pg_cid,
+            stop_fn=lambda: pg.stop(pg_cid, remove_volumes=remove_volumes),
+            remove_volumes=remove_volumes,
+            progress=progress,
+        )
+    redis_cid = containers.redis_container_id
+    if redis_cid is not None:
+        _stop_and_report(
+            service="redis",
+            container_id=redis_cid,
+            stop_fn=lambda: redis.stop(redis_cid, remove_volumes=remove_volumes),
+            remove_volumes=remove_volumes,
+            progress=progress,
+        )
 
 
 def assert_docker_available() -> None:
@@ -442,6 +512,68 @@ def _docker_client():  # type: ignore[no-untyped-def]
         raise
     except Exception as exc:
         raise DockerError("Could not create Docker client. Is the docker daemon running?") from exc
+
+
+def _container_label(name: str | None, container_id: str) -> str:
+    """``name (id12)`` when the name is known, bare ``id12`` otherwise."""
+
+    short_id = container_id[:12]
+    return f"{name} ({short_id})" if name else short_id
+
+
+def _inspect_container(container_id: str) -> ContainerInspection | None:
+    """Best-effort snapshot of a container's name and anonymous volumes.
+
+    Returns ``None`` instead of raising — the shutdown report must never
+    break teardown, and a dead daemon / already-removed container simply
+    degrades the report to the bare container id.
+    """
+
+    try:
+        container = _docker_client().containers.get(container_id)
+        volumes = tuple(
+            mount["Name"]
+            for mount in container.attrs.get("Mounts", ())
+            if mount.get("Type") == "volume"
+            and _ANONYMOUS_VOLUME_RE.fullmatch(mount.get("Name", ""))
+        )
+        return ContainerInspection(name=container.name, anonymous_volumes=volumes)
+    except Exception:
+        logger.debug("Inspecting container %s failed", container_id[:12], exc_info=True)
+        return None
+
+
+def _stop_and_report(
+    *,
+    service: str,
+    container_id: str,
+    stop_fn: Callable[[], None],
+    remove_volumes: bool,
+    progress: ProgressCallback | None,
+) -> None:
+    """Stop one container, then report what was removed / kept.
+
+    Inspection runs *before* removal — after ``docker rm -v`` there is
+    nothing left to ask — and only when someone is listening: with no
+    ``progress`` callback this is exactly the old silent stop. The report
+    is intent-based; actual removal failures are logged by the launchers.
+    """
+
+    info = _inspect_container(container_id) if progress is not None else None
+    try:
+        stop_fn()
+    except Exception:
+        logger.warning("Stopping container %s failed", container_id[:12], exc_info=True)
+    if progress is None:
+        return
+    label = _container_label(info.name if info else None, container_id)
+    progress(_DOCKER_STREAM, _DOCKER_COLOR, f"[docker] {service}: removed container {label}")
+    for volume in info.anonymous_volumes if info else ():
+        if remove_volumes:
+            line = f"[docker] {service}: removed anonymous volume {volume[:12]}…"
+        else:
+            line = f"[docker] {service}: kept volume {volume[:12]}… (remove_volumes=false)"
+        progress(_DOCKER_STREAM, _DOCKER_COLOR, line)
 
 
 def _stop_container_by_id(container_id: str, *, remove_volumes: bool) -> None:

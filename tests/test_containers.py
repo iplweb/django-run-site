@@ -88,7 +88,67 @@ def test_start_containers_fresh(minimal_config) -> None:
     assert containers.redis_created is True
     assert containers.pg_port == 54321
     assert containers.redis_port == 49153
-    assert pg.started[0]["name"] is None  # not reused → no name
+
+
+def test_start_containers_names_with_shared_suffix_without_reuse(minimal_config) -> None:
+    """Fresh (non-reuse) containers get identifiable names instead of
+    Docker's random ones: ``{slug}-runsite-{svc}-{suffix}`` where the
+    6-char hex suffix is generated once per run and shared by PG and
+    Redis, so ``docker ps`` shows which pair belongs together."""
+
+    import re
+
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    pg_name = pg.started[0]["name"]
+    redis_name = redis.started[0]["name"]
+    pg_match = re.fullmatch(r"demo-runsite-pg-([0-9a-f]{6})", pg_name or "")
+    redis_match = re.fullmatch(r"demo-runsite-redis-([0-9a-f]{6})", redis_name or "")
+    assert pg_match, pg_name
+    assert redis_match, redis_name
+    assert pg_match.group(1) == redis_match.group(1)  # shared per-run suffix
+
+
+def test_start_containers_suffix_differs_between_runs(minimal_config) -> None:
+    """Two concurrent run-site instances of the same project must not
+    collide on container names."""
+
+    names: list[str] = []
+    for _ in range(2):
+        pg = FakePgLauncher()
+        start_containers(
+            config=minimal_config,
+            reuse=False,
+            init_script=None,
+            pg_launcher=pg,
+            redis_launcher=FakeRedisLauncher(),
+        )
+        names.append(pg.started[0]["name"])
+    assert names[0] != names[1]
+
+
+def test_start_containers_no_find_existing_lookup_without_reuse(minimal_config) -> None:
+    """Suffixed names are fresh by construction — non-reuse runs must not
+    attach to some existing container that happens to match."""
+
+    pg = FakePgLauncher(found=("stale-pg", "127.0.0.1", 11111))
+    redis = FakeRedisLauncher(found=("stale-redis", "127.0.0.1", 22222))
+    containers = start_containers(
+        config=minimal_config,
+        reuse=False,
+        init_script=None,
+        pg_launcher=pg,
+        redis_launcher=redis,
+    )
+    assert containers.pg_container_id == "pg-cid"  # started fresh, not attached
+    assert containers.redis_container_id == "redis-cid"
 
 
 def test_start_containers_reuse_uses_named(minimal_config) -> None:
@@ -562,6 +622,259 @@ def test_stop_containers_noop_when_ids_are_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shutdown report: stop_containers(progress=...) tells the user which
+# containers/anonymous volumes were removed — and what was left behind
+# (reuse / remove_volumes=false). Inspection happens BEFORE removal (after
+# `docker rm -v` there is nothing left to ask) via _inspect_container,
+# monkeypatched here so no Docker daemon is needed.
+# ---------------------------------------------------------------------------
+
+_PG_CID = "pgcid1234567890abcdef"
+_REDIS_CID = "rediscid1234567890abc"
+_PG_VOLUME = "4f5e6d7c8b9a" + "0" * 52  # 64-hex anonymous volume name
+
+
+def _running_stack(*, reuse: bool = False) -> RunSiteContainers:
+    return RunSiteContainers(
+        pg_host="127.0.0.1",
+        pg_port=1,
+        pg_container_id=_PG_CID,
+        pg_created=True,
+        redis_host="127.0.0.1",
+        redis_port=2,
+        redis_container_id=_REDIS_CID,
+        redis_created=True,
+        reuse=reuse,
+    )
+
+
+def _fake_inspection(monkeypatch, *, pg_volumes: tuple[str, ...] = (_PG_VOLUME,)) -> None:
+    def inspect(container_id: str):
+        if container_id == _PG_CID:
+            return containers_mod.ContainerInspection(
+                name="demo-runsite-pg-3f9a2c", anonymous_volumes=pg_volumes
+            )
+        if container_id == _REDIS_CID:
+            return containers_mod.ContainerInspection(
+                name="demo-runsite-redis-3f9a2c", anonymous_volumes=()
+            )
+        raise AssertionError(f"unexpected container id {container_id!r}")
+
+    monkeypatch.setattr(containers_mod, "_inspect_container", inspect)
+
+
+def _record_progress(events: list[tuple[str, str, str]]):
+    return lambda name, color, line: events.append((name, color, line))
+
+
+def test_stop_containers_reports_removed_containers_and_volumes(monkeypatch) -> None:
+    _fake_inspection(monkeypatch)
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    events: list[tuple[str, str, str]] = []
+    stop_containers(
+        _running_stack(),
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=_record_progress(events),
+    )
+    lines = [line for _, _, line in events]
+    assert any(
+        "postgres" in line and "removed container" in line and "demo-runsite-pg-3f9a2c" in line
+        for line in lines
+    ), lines
+    assert any(_PG_CID[:12] in line for line in lines), lines
+    assert any(
+        "postgres" in line and "removed anonymous volume" in line and _PG_VOLUME[:12] in line
+        for line in lines
+    ), lines
+    assert any(
+        "redis" in line and "removed container" in line and "demo-runsite-redis-3f9a2c" in line
+        for line in lines
+    ), lines
+    # Redis had no anonymous volumes — no volume line for it.
+    assert not any("redis" in line and "volume" in line for line in lines), lines
+    # Deletion still happened as before.
+    assert pg.stopped == [_PG_CID]
+    assert redis.stopped == [_REDIS_CID]
+
+
+def test_stop_containers_reports_kept_volumes_when_knob_off(monkeypatch) -> None:
+    _fake_inspection(monkeypatch)
+    events: list[tuple[str, str, str]] = []
+    stop_containers(
+        _running_stack(),
+        pg_launcher=FakePgLauncher(),
+        redis_launcher=FakeRedisLauncher(),
+        remove_volumes=False,
+        progress=_record_progress(events),
+    )
+    lines = [line for _, _, line in events]
+    assert any(
+        "postgres" in line
+        and "kept volume" in line
+        and _PG_VOLUME[:12] in line
+        and "remove_volumes=false" in line
+        for line in lines
+    ), lines
+    assert not any("removed anonymous volume" in line for line in lines), lines
+
+
+def test_stop_containers_reports_left_running_on_reuse(monkeypatch) -> None:
+    _fake_inspection(monkeypatch)
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    events: list[tuple[str, str, str]] = []
+    stop_containers(
+        _running_stack(reuse=True),
+        pg_launcher=pg,
+        redis_launcher=redis,
+        progress=_record_progress(events),
+    )
+    lines = [line for _, _, line in events]
+    assert any(
+        "postgres" in line and "left running (reuse)" in line and "demo-runsite-pg-3f9a2c" in line
+        for line in lines
+    ), lines
+    assert any("redis" in line and "left running (reuse)" in line for line in lines), lines
+    # Reuse semantics unchanged: nothing stopped.
+    assert pg.stopped == []
+    assert redis.stopped == []
+
+
+def test_stop_containers_report_degrades_when_inspection_unavailable(monkeypatch) -> None:
+    """Daemon gone / container already removed → the line falls back to the
+    short container id, with no name and no volume lines."""
+
+    monkeypatch.setattr(containers_mod, "_inspect_container", lambda cid: None)
+    events: list[tuple[str, str, str]] = []
+    stop_containers(
+        _running_stack(),
+        pg_launcher=FakePgLauncher(),
+        redis_launcher=FakeRedisLauncher(),
+        progress=_record_progress(events),
+    )
+    lines = [line for _, _, line in events]
+    assert any(
+        "postgres" in line and "removed container" in line and _PG_CID[:12] in line
+        for line in lines
+    ), lines
+    assert not any("volume" in line for line in lines), lines
+
+
+def test_stop_containers_skips_inspection_without_progress(monkeypatch) -> None:
+    """No progress callback → nothing to report → no Docker API calls."""
+
+    def fail(container_id: str):
+        raise AssertionError("inspection must not run when progress is None")
+
+    monkeypatch.setattr(containers_mod, "_inspect_container", fail)
+    pg = FakePgLauncher()
+    redis = FakeRedisLauncher()
+    stop_containers(_running_stack(), pg_launcher=pg, redis_launcher=redis)
+    assert pg.stopped == [_PG_CID]
+    assert redis.stopped == [_REDIS_CID]
+
+
+def test_stop_containers_no_report_lines_for_disabled_services(monkeypatch) -> None:
+    _fake_inspection(monkeypatch)
+    events: list[tuple[str, str, str]] = []
+    containers = RunSiteContainers(
+        pg_host=None,
+        pg_port=None,
+        pg_container_id=None,
+        pg_created=None,
+        redis_host=None,
+        redis_port=None,
+        redis_container_id=None,
+        redis_created=None,
+        reuse=False,
+    )
+    stop_containers(
+        containers,
+        pg_launcher=FakePgLauncher(),
+        redis_launcher=FakeRedisLauncher(),
+        progress=_record_progress(events),
+    )
+    assert events == []
+
+
+def test_rollback_reports_pg_cleanup(minimal_config, monkeypatch) -> None:
+    """When Redis fails after PG started, the PG rollback is reported
+    through the same progress callback used for startup messages."""
+
+    def inspect(container_id: str):
+        return containers_mod.ContainerInspection(
+            name="demo-runsite-pg-3f9a2c", anonymous_volumes=(_PG_VOLUME,)
+        )
+
+    monkeypatch.setattr(containers_mod, "_inspect_container", inspect)
+    pg = FakePgLauncher()
+
+    class FailingRedis(RedisLauncher):
+        def start(self, *, image, name) -> tuple[str, str, int]:
+            raise RuntimeError("simulated redis boom")
+
+        def find_existing(self, name: str) -> tuple[str, str, int] | None:
+            return None
+
+        def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
+            pass
+
+    events: list[tuple[str, str, str]] = []
+    with pytest.raises(RuntimeError, match="simulated redis boom"):
+        start_containers(
+            config=minimal_config,
+            reuse=False,
+            init_script=None,
+            pg_launcher=pg,
+            redis_launcher=FailingRedis(),
+            progress=_record_progress(events),
+        )
+    lines = [line for _, _, line in events]
+    assert any(
+        "postgres" in line and "removed container" in line and "demo-runsite-pg-3f9a2c" in line
+        for line in lines
+    ), lines
+    assert pg.stopped == ["pg-cid"]
+
+
+# ---------------------------------------------------------------------------
+# _inspect_container: name + anonymous volumes via the docker SDK, never
+# raising — teardown must survive a dead daemon.
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_container_returns_name_and_anonymous_volumes(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    container = SimpleNamespace(
+        name="demo-runsite-pg-3f9a2c",
+        attrs={
+            "Mounts": [
+                {"Type": "volume", "Name": _PG_VOLUME},  # anonymous: 64-hex name
+                {"Type": "volume", "Name": "named-volume"},  # named: kept out
+                {"Type": "bind", "Source": "/tmp/x"},  # bind mount: kept out
+            ]
+        },
+    )
+    client = SimpleNamespace(containers=SimpleNamespace(get=lambda cid: container))
+    monkeypatch.setattr(containers_mod, "_docker_client", lambda: client)
+    info = containers_mod._inspect_container("cid1234567890")
+    assert info is not None
+    assert info.name == "demo-runsite-pg-3f9a2c"
+    assert info.anonymous_volumes == (_PG_VOLUME,)
+
+
+def test_inspect_container_returns_none_when_daemon_unreachable(monkeypatch) -> None:
+    def boom():
+        raise RuntimeError("no daemon")
+
+    monkeypatch.setattr(containers_mod, "_docker_client", boom)
+    assert containers_mod._inspect_container("cid1234567890") is None
+
+
+# ---------------------------------------------------------------------------
 # Docker client resolution: honor the active `docker context`.
 #
 # docker.from_env() honors DOCKER_HOST but — unlike the docker CLI — ignores
@@ -820,3 +1133,28 @@ def test_wrapped_stop_forwards_delete_volume(launcher_cls) -> None:
     launcher._containers["cid1234567890"] = FakeWrapped()
     launcher.stop("cid1234567890", remove_volumes=False)
     assert recorded == {"delete_volume": False}
+
+
+@pytest.mark.docker
+@pytest.mark.integration
+def test_shutdown_report_against_real_docker(minimal_config) -> None:
+    """End to end: a real PG container gets the deterministic name and the
+    shutdown report cites that name plus its anonymous data volume."""
+
+    import re
+    from dataclasses import replace
+
+    config = replace(minimal_config, redis=replace(minimal_config.redis, enabled=False))
+    events: list[tuple[str, str, str]] = []
+    containers = start_containers(config=config, reuse=False, init_script=None)
+    stop_containers(
+        containers,
+        progress=lambda name, color, line: events.append((name, color, line)),
+    )
+    lines = [line for _, _, line in events]
+    removed = [line for line in lines if "postgres" in line and "removed container" in line]
+    assert removed, lines
+    assert re.search(r"demo-runsite-pg-[0-9a-f]{6}", removed[0]), removed
+    # postgres:* images declare VOLUME /var/lib/postgresql/data → at least
+    # one anonymous volume must be reported as removed.
+    assert any("removed anonymous volume" in line for line in lines), lines

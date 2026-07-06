@@ -648,9 +648,14 @@ def _execute_run(
             # Diagnostic mode — containers were started so the printed env
             # reflects real ports. Tear them down on the way out unless the
             # user asked to keep them alive for reuse.
+            with _suppress():
+                # No-op teardown under --reuse (reports "left running").
+                stop_containers(
+                    containers,
+                    remove_volumes=config.containers.remove_volumes,
+                    progress=mux.write,
+                )
             if not opts.reuse:
-                with _suppress():
-                    stop_containers(containers, remove_volumes=config.containers.remove_volumes)
                 with _suppress():
                     cleanup_sqlite(sqlite_state)
             return 0
@@ -1038,11 +1043,16 @@ def _execute_run(
             ctx=ctx_pre_serve,
             disabled_hooks=disabled_hooks,
             env=env_for_subprocess,
+            mux=mux,
         )
     except Exception:
         proc_group.terminate_all()
         with _suppress():
-            stop_containers(containers, remove_volumes=config.containers.remove_volumes)
+            stop_containers(
+                containers,
+                remove_volumes=config.containers.remove_volumes,
+                progress=mux.write,
+            )
         with _suppress():
             cleanup_sqlite(sqlite_state)
         with _suppress():
@@ -1064,6 +1074,7 @@ def _shutdown(
     ctx,
     disabled_hooks: set[str],
     env,
+    mux: LogMultiplexer,
 ) -> int:
     proc_group.terminate_all()
     with _suppress():
@@ -1077,9 +1088,14 @@ def _shutdown(
             disabled_flags=disabled_hooks,
             best_effort=True,
         )
+    with _suppress():
+        # No-op teardown under --reuse (reports "left running").
+        stop_containers(
+            containers,
+            remove_volumes=config.containers.remove_volumes,
+            progress=mux.write,
+        )
     if not opts.reuse:
-        with _suppress():
-            stop_containers(containers, remove_volumes=config.containers.remove_volumes)
         with _suppress():
             cleanup_sqlite(sqlite_state)
     with _suppress():
