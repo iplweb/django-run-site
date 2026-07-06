@@ -148,7 +148,7 @@ Two browser tabs open automatically:
 
 - Tab 1 (orchestrator): homepage `http://<host>:<port>/`
 - Tab 2 (dev-helpers): autologin URL with the token, e.g.
-  `http://<host>:<port>/__autologin__/<token>/`
+  `http://<host>:<port>/__autologin__/?token=<token>`
 
 `--no-browser` on the CLI suppresses tab 1. To suppress tab 2, set
 `DJANGO_DEV_HELPERS["browser_open"]["enabled"] = False` in `settings.py`.
