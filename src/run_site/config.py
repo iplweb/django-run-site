@@ -130,6 +130,10 @@ class DjangoConfig:
     # headless — SSH on macOS, missing $DISPLAY/$WAYLAND_DISPLAY on
     # Linux. Booleans force the decision regardless of detection.
     open_browser: Literal["auto"] | bool = "auto"
+    # After the server is up, if django-dev-helpers' live-reload reports an
+    # already-connected tab, refresh it in place instead of opening a new one.
+    reuse_browser_tab: bool = True
+    browser_reuse_grace: float = 2.0
     # Override the web process. When None, the orchestrator runs
     # ``<python> manage.py runserver <bind>:<port>``. When set, the
     # tokens go through the same template-substitution as
@@ -657,6 +661,8 @@ def _build_django(raw: Mapping[str, Any]) -> DjangoConfig:
         probe_timeout=float(timeout),
         web_command=web_command,
         open_browser=open_browser,
+        reuse_browser_tab=_bool(raw, "reuse_browser_tab", default=True),
+        browser_reuse_grace=float(raw.get("browser_reuse_grace", 2.0)),
     )
 
 
