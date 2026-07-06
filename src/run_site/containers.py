@@ -164,17 +164,16 @@ class TestcontainersPostgres:
     def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         wrapped = self._containers.pop(container_id, None)
         if wrapped is not None:
-            with suppress(Exception):
-                wrapped.stop()
+            try:
+                wrapped.stop(delete_volume=remove_volumes)
+            except Exception:
+                logger.warning(
+                    "Stopping container %s via testcontainers failed",
+                    container_id[:12],
+                    exc_info=True,
+                )
             return
-        client = _docker_client()
-        try:
-            container = client.containers.get(container_id)
-        except Exception:
-            return
-        with suppress(Exception):
-            container.stop()
-            container.remove(force=True)
+        _stop_container_by_id(container_id, remove_volumes=remove_volumes)
 
     def stream_logs_argv(self, container_id: str) -> tuple[str, ...]:
         return ("docker", "logs", "-f", "--tail", "0", container_id)
@@ -225,17 +224,16 @@ class TestcontainersRedis:
     def stop(self, container_id: str, *, remove_volumes: bool = True) -> None:
         wrapped = self._containers.pop(container_id, None)
         if wrapped is not None:
-            with suppress(Exception):
-                wrapped.stop()
+            try:
+                wrapped.stop(delete_volume=remove_volumes)
+            except Exception:
+                logger.warning(
+                    "Stopping container %s via testcontainers failed",
+                    container_id[:12],
+                    exc_info=True,
+                )
             return
-        client = _docker_client()
-        try:
-            container = client.containers.get(container_id)
-        except Exception:
-            return
-        with suppress(Exception):
-            container.stop()
-            container.remove(force=True)
+        _stop_container_by_id(container_id, remove_volumes=remove_volumes)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +442,37 @@ def _docker_client():  # type: ignore[no-untyped-def]
         raise
     except Exception as exc:
         raise DockerError("Could not create Docker client. Is the docker daemon running?") from exc
+
+
+def _stop_container_by_id(container_id: str, *, remove_volumes: bool) -> None:
+    """Stop and remove a container by id (the fallback when the launcher
+    that started it is gone — the CLI's normal shutdown path).
+
+    ``remove_volumes`` maps to ``docker rm -v``: Docker deletes exactly the
+    anonymous volumes it attached to this container; named volumes and bind
+    mounts are never touched.
+    """
+
+    client = _docker_client()
+    try:
+        container = client.containers.get(container_id)
+    except Exception:
+        # Container already gone (or daemon unreachable) — nothing to stop.
+        logger.debug("Container %s not found; skipping stop", container_id[:12], exc_info=True)
+        return
+    try:
+        container.stop()
+    except Exception:
+        # remove(force=True) below kills the container on its own.
+        logger.warning(
+            "Graceful stop of container %s failed; forcing removal",
+            container_id[:12],
+            exc_info=True,
+        )
+    try:
+        container.remove(force=True, v=remove_volumes)
+    except Exception:
+        logger.warning("Removing container %s failed", container_id[:12], exc_info=True)
 
 
 def _ensure_docker_host_env() -> None:

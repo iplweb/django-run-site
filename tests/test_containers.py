@@ -6,8 +6,14 @@ Real-Docker tests that depend on a running daemon should be marked
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+import pytest
+
+# The real launcher classes are referenced via the module (not imported by
+# name) so pytest doesn't try to collect ``Testcontainers*`` as test classes.
+from run_site import containers as containers_mod
 from run_site.containers import (
     PostgresLauncher,
     RedisLauncher,
@@ -721,3 +727,96 @@ def test_start_containers_exports_docker_host_before_launching(minimal_config, m
     )
 
     assert seen["docker_host_at_start"] == "unix:///Users/me/.orbstack/run/docker.sock"
+
+
+# ---------------------------------------------------------------------------
+# Real launchers, fallback stop path (no Docker daemon involved).
+#
+# The CLI calls stop_containers() without launcher instances, so the stop
+# always goes through the by-id fallback, not the wrapped testcontainers
+# object. Before the fix that path called remove(force=True) without v=True
+# and orphaned the anonymous volumes (postgres:/var/lib/postgresql/data,
+# redis:/data) on every graceful shutdown.
+# ---------------------------------------------------------------------------
+
+
+class _FakeFallbackContainer:
+    """Mimics the docker SDK Container for the by-id fallback path."""
+
+    def __init__(self, *, stop_raises: bool = False) -> None:
+        self.stop_calls = 0
+        self.remove_kwargs: list[dict] = []
+        self._stop_raises = stop_raises
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        if self._stop_raises:
+            raise RuntimeError("simulated daemon hiccup")
+
+    def remove(self, **kwargs) -> None:
+        self.remove_kwargs.append(kwargs)
+
+
+def _patch_docker_client(monkeypatch, container: _FakeFallbackContainer) -> None:
+    from types import SimpleNamespace
+
+    client = SimpleNamespace(containers=SimpleNamespace(get=lambda cid: container))
+    monkeypatch.setattr(containers_mod, "_docker_client", lambda: client)
+
+
+@pytest.mark.parametrize(
+    "launcher_cls", [containers_mod.TestcontainersPostgres, containers_mod.TestcontainersRedis]
+)
+def test_fallback_stop_removes_anonymous_volumes(monkeypatch, launcher_cls) -> None:
+    """Regression for the volume leak: the by-id fallback must remove the
+    container together with its anonymous volumes (docker rm -v)."""
+
+    fake = _FakeFallbackContainer()
+    _patch_docker_client(monkeypatch, fake)
+    launcher_cls().stop("cid1234567890")
+    assert fake.stop_calls == 1
+    assert fake.remove_kwargs == [{"force": True, "v": True}]
+
+
+@pytest.mark.parametrize(
+    "launcher_cls", [containers_mod.TestcontainersPostgres, containers_mod.TestcontainersRedis]
+)
+def test_fallback_stop_keeps_volumes_when_knob_off(monkeypatch, launcher_cls) -> None:
+    fake = _FakeFallbackContainer()
+    _patch_docker_client(monkeypatch, fake)
+    launcher_cls().stop("cid1234567890", remove_volumes=False)
+    assert fake.remove_kwargs == [{"force": True, "v": False}]
+
+
+@pytest.mark.parametrize(
+    "launcher_cls", [containers_mod.TestcontainersPostgres, containers_mod.TestcontainersRedis]
+)
+def test_fallback_removal_survives_stop_failure(monkeypatch, caplog, launcher_cls) -> None:
+    """A hiccup in the graceful stop() must not skip removal — remove
+    (force=True) kills the container on its own, and the failure is logged."""
+
+    fake = _FakeFallbackContainer(stop_raises=True)
+    _patch_docker_client(monkeypatch, fake)
+    with caplog.at_level(logging.WARNING, logger="run_site.containers"):
+        launcher_cls().stop("cid1234567890")
+    assert fake.remove_kwargs == [{"force": True, "v": True}]
+    assert any("forcing removal" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "launcher_cls", [containers_mod.TestcontainersPostgres, containers_mod.TestcontainersRedis]
+)
+def test_wrapped_stop_forwards_delete_volume(launcher_cls) -> None:
+    """When the stop goes through the wrapped testcontainers object (same
+    launcher instance that started it), the knob maps to delete_volume."""
+
+    recorded: dict[str, bool] = {}
+
+    class FakeWrapped:
+        def stop(self, delete_volume: bool = True) -> None:
+            recorded["delete_volume"] = delete_volume
+
+    launcher = launcher_cls()
+    launcher._containers["cid1234567890"] = FakeWrapped()
+    launcher.stop("cid1234567890", remove_volumes=False)
+    assert recorded == {"delete_volume": False}
