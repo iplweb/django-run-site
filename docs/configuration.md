@@ -197,6 +197,28 @@ terminal), Ryuk removes the containers **including** their anonymous
 volumes regardless of this setting. For volumes that must survive a hard
 kill, also set `ryuk = false`.
 
+**Shutdown report:** on teardown (ctrl+c) run-site prints what happened
+to the stack — which containers and anonymous volumes were removed, or
+what was left behind and why:
+
+```
+[docker] postgres: removed container myproj-runsite-pg-3f9a2c (a1b2c3d4e5f6)
+[docker] postgres: removed anonymous volume 4f5e6d7c8b9a…
+[docker] redis: removed container myproj-runsite-redis-3f9a2c (0f1e2d3c4b5a)
+```
+
+With `--reuse` the lines read `left running (reuse)`; with
+`remove_volumes = false` each surviving volume is reported as
+`kept volume … (remove_volumes=false)`.
+
+**Container names:** containers are always named
+`{project_slug}-runsite-pg` / `{project_slug}-runsite-redis`. In reuse
+mode the name is exactly that (deterministic, so the next `--reuse` run
+finds the stack again); fresh runs append a random per-run suffix shared
+by both services (e.g. `myproj-runsite-pg-3f9a2c`), so two instances of
+the same project never collide on names and `docker ps` shows which
+PG/Redis pair belongs together.
+
 **Cleaning up historical leftovers:** earlier versions of run-site
 orphaned one anonymous volume per PG/Redis container on every non-reuse
 run. A one-time

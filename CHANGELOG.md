@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Shutdown report** — on teardown (Ctrl+C) run-site now prints what
+  happened to the container stack: which containers and anonymous volumes
+  were removed (`[docker] postgres: removed container
+  myproj-runsite-pg-3f9a2c (a1b2c3d4e5f6)` / `removed anonymous volume
+  4f5e6d7c8b9a…`), or — with `--reuse` / `remove_volumes = false` — what
+  was left behind and why (`left running (reuse)`, `kept volume …
+  (remove_volumes=false)`).
+- **Deterministic container names in every mode.** Fresh (non-reuse) runs
+  no longer get Docker's random names (`sharp_ptolemy`): containers are
+  named `{project_slug}-runsite-pg-{suffix}` /
+  `{project_slug}-runsite-redis-{suffix}` with a random per-run suffix
+  shared by both services, so `docker ps` shows which pair belongs to
+  which run and concurrent instances of the same project never collide.
+  Reuse-mode names are unchanged (`{project_slug}-runsite-pg`).
+
 ## [0.18.0] — 2026-07-06
 
 ### Added
