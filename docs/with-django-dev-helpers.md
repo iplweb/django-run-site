@@ -153,6 +153,22 @@ Two browser tabs open automatically:
 `--no-browser` on the CLI suppresses tab 1. To suppress tab 2, set
 `DJANGO_DEV_HELPERS["browser_open"]["enabled"] = False` in `settings.py`.
 
+### Restarts refresh the tabs instead of duplicating them
+
+With `live_reload` (on by default in dev-helpers), each restart **reloads the
+two already-open tabs in place** rather than opening a new pair. dev-helpers
+injects a tiny SSE client into every page; when the server returns after a
+restart it reports a new boot id and the tab reloads itself. Both openers stand
+down when a live tab is already connected — run-site checks
+`/__dev_reload__/clients` (gated by `[django].reuse_browser_tab`, default
+`true`) and dev-helpers checks its in-process connection count (gated by
+`live_reload.reuse_tabs`).
+
+If you close **both** tabs and restart, a fresh pair opens again. Close just one
+and the survivor reloads while the closed one stays closed (both tabs live at
+`/`, so they're indistinguishable). See the dev-helpers `live_reload` config for
+the `grace_seconds` and CSP caveats.
+
 ## Standalone modes
 
 ### Just the CLI, no helpers app
