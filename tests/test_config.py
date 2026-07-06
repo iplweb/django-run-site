@@ -299,3 +299,24 @@ def test_source_multiple_refs_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="multiple refs"):
         load_config(config_path=cfg, project_root=tmp_path)
+
+
+def test_containers_remove_volumes_defaults_true(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.containers.remove_volumes is True
+
+
+def test_containers_remove_volumes_explicit_false(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[containers]\nremove_volumes = false\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.containers.remove_volumes is False
+
+
+def test_containers_remove_volumes_rejects_non_boolean(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n[containers]\nremove_volumes = "yes"\n')
+    with pytest.raises(ConfigError, match=r"\[containers\]\.remove_volumes must be a boolean"):
+        load_config(config_path=cfg, project_root=tmp_path)

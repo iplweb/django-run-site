@@ -98,6 +98,7 @@ class SqliteConfig:
 @dataclass(frozen=True)
 class ContainersConfig:
     ryuk: RyukMode = "auto"
+    remove_volumes: bool = True
 
 
 @dataclass(frozen=True)
@@ -575,7 +576,10 @@ def _build_containers(raw: Mapping[str, Any]) -> ContainersConfig:
     if ryuk_raw not in ("auto", True, False):
         raise ConfigError("[containers].ryuk must be 'auto', true, or false")
     ryuk: RyukMode = "auto" if ryuk_raw == "auto" else ("true" if ryuk_raw is True else "false")
-    return ContainersConfig(ryuk=ryuk)
+    remove_volumes = raw.get("remove_volumes", True)
+    if not isinstance(remove_volumes, bool):
+        raise ConfigError("[containers].remove_volumes must be a boolean")
+    return ContainersConfig(ryuk=ryuk, remove_volumes=remove_volumes)
 
 
 def _build_dump(raw: Mapping[str, Any]) -> DumpConfig:
