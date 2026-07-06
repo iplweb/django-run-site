@@ -5,7 +5,8 @@ Status: approved
 
 ## Problem
 
-Every `run-site` run leaks anonymous Docker volumes. The `postgres` and
+Every non-reuse `run-site` run with PG/Redis enabled leaks anonymous
+Docker volumes. The `postgres` and
 `redis` images declare `VOLUME` directives (`/var/lib/postgresql/data`,
 `/data`), so Docker creates anonymous volumes on each container start.
 On shutdown, `cli.py` calls `stop_containers(containers)` without passing
@@ -27,6 +28,12 @@ Anonymous volumes created by the PG/Redis test containers are removed by
 default whenever run-site stops the stack. Behavior is controlled by a
 config knob `[containers].remove_volumes` (default `true`).
 
+The knob's intended use case for `false` is post-mortem inspection of a
+container's data after a run — not data persistence between runs. After
+`docker rm` without `-v` an anonymous volume is dangling, unlabeled, and
+impractical to re-attach; persistence is what `--reuse` is for (the
+container stays alive together with its volume).
+
 ## Design
 
 ### 1. Config (`config.py`)
@@ -39,15 +46,28 @@ config knob `[containers].remove_volumes` (default `true`).
 
 - The `PostgresLauncher.stop` / `RedisLauncher.stop` protocol methods gain
   a keyword-only parameter: `stop(container_id, *, remove_volumes: bool = True)`.
+  The default is repeated in the real launchers and the test fakes; it
+  exists for direct callers that don't thread the knob (e.g. the
+  integration tests calling `stop_containers` bare).
 - In both real launchers (`TestcontainersPostgres`, `TestcontainersRedis`):
   - wrapped path: `wrapped.stop(delete_volume=remove_volumes)`
     (today implicitly `True`, but effectively dead from the CLI),
   - fallback path (the one the CLI actually exercises and the one that
     leaks): `container.remove(force=True, v=remove_volumes)`.
+- Fallback error path: `container.stop()` (graceful DB shutdown) and
+  `container.remove(...)` are guarded separately — a failure in `stop()`
+  is logged and does not prevent the `remove()` attempt, which kills and
+  removes on its own (`force=True`). Today a single `suppress` wraps both,
+  so a `stop()` hiccup silently skips removal entirely.
 - `stop_containers(...)` gains `remove_volumes: bool = True` and forwards
-  it to both launchers.
+  it to both launchers. `force=True` (the reuse override) honors the knob
+  the same way — no special casing. Note `find_existing` attaches by name,
+  so a forced stop can remove volumes of a container run-site did not
+  create; no CLI path passes `force=True` today.
 - The rollback inside `start_containers` (Redis fails after PG started)
   also stops PG with `remove_volumes` taken from `config.containers`.
+  (This path flows through the wrapped testcontainers object, which
+  already deletes volumes today; the change makes it honor the knob.)
 
 `v=True` only removes anonymous volumes; the read-only bind mount for the
 init script is unaffected.
@@ -72,31 +92,58 @@ better.
   `remove_volumes=config.containers.remove_volumes`.
 - No new CLI flag — the knob lives in config only.
 
+### Knob scope vs Ryuk (important semantics)
+
+`remove_volumes` governs only teardown performed by run-site itself.
+When the process dies without running its teardown — SIGKILL, closed
+terminal, or a Ctrl+C in the window before the signal handlers are
+installed (`KeyboardInterrupt` is not caught by the `except Exception`
+cleanup block) — Ryuk removes the containers in non-reuse mode, and Ryuk
+always removes attached anonymous volumes (`RemoveVolumes: true`),
+regardless of the knob. So `remove_volumes = false` is best-effort: it
+holds for run-site-initiated shutdown, and additionally requires
+`[containers].ryuk = false` to survive a hard kill. This is documented
+next to the knob in `docs/configuration.md`.
+
 ### 4. Tests
 
 - `test_config.py`: knob parsing — default `true`, explicit `false`,
   non-boolean → `ConfigError`.
 - `test_containers.py`:
-  - fake launchers accept the new kwarg,
+  - all fakes accept the new kwarg (the module-level `FakePgLauncher` /
+    `FakeRedisLauncher` and the inline failing fakes),
   - `stop_containers` forwards `remove_volumes` to the launchers,
   - unit tests for `TestcontainersPostgres.stop` / `TestcontainersRedis.stop`
-    with a substituted Docker client asserting `remove(force=True, v=True)`
-    (regression for the actual bug) and `v=False` when the knob is off.
+    fallback path with a substituted Docker client asserting
+    `remove(force=True, v=True)` (regression for the actual bug) and
+    `v=False` when the knob is off,
+  - wrapped path forwards `wrapped.stop(delete_volume=remove_volumes)`,
+  - fallback removal still runs (and the failure is logged) when
+    `container.stop()` raises,
+  - the `start_containers` rollback passes the knob (extend
+    `test_redis_failure_rolls_back_pg` with an assertion on the kwarg
+    recorded by the fake).
+- CLI wiring (three call sites pass the knob) is covered if practical
+  via the existing dry-run/CLI test seams; otherwise left to the unit
+  layers above.
 
 ### 5. Documentation
 
-- `docs/`: document `[containers].remove_volumes` next to `ryuk`; add a
-  short note for historical leftovers: a one-time `docker volume prune`
-  removes dangling anonymous volumes (warning: it touches all dangling
-  anonymous volumes, not just run-site's).
+- `docs/configuration.md`: document `[containers].remove_volumes` next to
+  `ryuk`, including the knob-scope caveat (Ryuk ignores the knob on hard
+  kill; combine with `ryuk = false` for guaranteed post-mortem volumes)
+  and the intended use case (inspection, not persistence — use `--reuse`
+  for persistence). Add a short note for historical leftovers: a one-time
+  `docker volume prune` removes dangling anonymous volumes (warning: it
+  touches all dangling anonymous volumes, not just run-site's).
 - `examples/runsite*.toml`: add a commented-out example of the knob.
 
 ## Out of scope
 
 - Ctrl+C signal handling — the current sequence (flag in handler, teardown
   on the main thread, second Ctrl+C escalates) is correct. After this fix,
-  both graceful and hard-kill paths clean up volumes (the latter via Ryuk
-  in non-reuse mode).
+  with default settings both graceful and hard-kill paths clean up volumes
+  (the latter via Ryuk in non-reuse mode; see "Knob scope vs Ryuk").
 - A `run-site prune` command for pre-existing orphaned volumes — they
   cannot be attributed to run-site (anonymous volumes carry no labels), so
   cleanup stays a documented, deliberate manual step.
