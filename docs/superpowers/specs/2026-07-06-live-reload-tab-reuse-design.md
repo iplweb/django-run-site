@@ -193,13 +193,19 @@ Add to `_DEFAULTS`, add `self.live_reload = _dict_to_namespace(...)` in
 - `GET http://<host>:<port>/__dev_reload__/clients` (short timeout) sampled a
   few times across `config.django.browser_reuse_grace` (new knob, default 2.0;
   e.g. every ~0.5 s), parsing `count`. If any sample is `≥ 1` → **skip**
-  `webbrowser.open`, set a banner status like "existing tab detected —
-  refreshed in place". If every sample is `0`, or the endpoint is `404` /
-  non-JSON / unreachable → open as today. Endpoint 404 (dev-helpers absent or
-  live-reload off) means standalone run-site behaves exactly as before.
+  `webbrowser.open` and `logger.info` "existing browser tab detected —
+  refreshing in place, not opening a new tab". If every sample is `0`, or the
+  endpoint is `404` / non-JSON / unreachable → open as today. Endpoint 404
+  (dev-helpers absent or live-reload off) means standalone run-site behaves
+  exactly as before.
 
-Wire the decision so the banner (`RunInfo.browser_status`) reflects the
-reuse outcome, matching run-site's existing "explain what was decided" style.
+**Banner note:** the reuse decision happens asynchronously in the probe
+thread, *after* the sticky banner has already rendered, so it cannot be
+written back into the banner. Instead, when `reuse_browser_tab` is on and the
+open decision is `True`, `_resolve_browser_decision` appends a
+"(or refresh an existing tab)" suffix to `browser_status` up front, so the
+banner sets the right expectation; the actual skip is logged, not shown in the
+banner.
 
 ## Config reference
 
