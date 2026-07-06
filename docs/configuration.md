@@ -172,12 +172,41 @@ the local DB file doesn't end up in commits.
 
 ```toml
 [containers]
-ryuk = "auto"   # "auto" | true | false
+ryuk = "auto"           # "auto" | true | false
+remove_volumes = true   # delete anonymous volumes when run-site stops the stack
 ```
 
 Controls testcontainers' Ryuk reaper. `auto` enables Ryuk for fresh runs
 and disables it with `--reuse` (named containers shouldn't be auto-killed
 between runs).
+
+`remove_volumes` (default `true`) deletes the anonymous Docker volumes
+the PG/Redis images declare (`/var/lib/postgresql/data`, `/data`)
+together with their containers when run-site tears the stack down. Only
+volumes Docker attached to run-site's own containers are affected —
+named volumes and bind mounts are never touched (`docker rm -v`
+semantics).
+
+Set `remove_volumes = false` only for post-mortem inspection of a
+container's data: after the container is gone the volume is dangling and
+unlabeled, so this is not a persistence mechanism — keeping data between
+runs is what `--reuse` is for (the container stays alive together with
+its volume). The knob only governs teardown performed by run-site
+itself; when the process dies without cleaning up (SIGKILL, closed
+terminal), Ryuk removes the containers **including** their anonymous
+volumes regardless of this setting. For volumes that must survive a hard
+kill, also set `ryuk = false`.
+
+**Cleaning up historical leftovers:** earlier versions of run-site
+orphaned one anonymous volume per PG/Redis container on every non-reuse
+run. A one-time
+
+```bash
+docker volume prune
+```
+
+removes dangling anonymous volumes — note it touches *all* dangling
+anonymous volumes on the machine, not just run-site's.
 
 ## `[dump]`
 

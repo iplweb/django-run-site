@@ -22,6 +22,13 @@ POSTGRESQL_MAX_LOCKS_PER_TRANSACTION = "512"
 [redis]
 image = "redis:7-alpine"
 
+# [containers]
+# Anonymous PG/Redis data volumes are deleted on shutdown by default.
+# Uncomment to keep them for post-mortem inspection (they will be left
+# dangling; combine with ryuk = false to also survive a hard kill).
+# For keeping data between runs use --reuse instead.
+# remove_volumes = false
+
 [dump]
 default_path = "src/baseline-sql/baseline.sql"
 strategy = "auto"
