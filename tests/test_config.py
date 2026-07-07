@@ -77,6 +77,24 @@ def test_django_open_browser_rejects_other_strings(tmp_path: Path) -> None:
         load_config(config_path=cfg, project_root=tmp_path)
 
 
+def test_django_reuse_browser_tab_defaults_true(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text('project_slug = "x"\n')
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.django.reuse_browser_tab is True
+    assert config.django.browser_reuse_grace == 2.0
+
+
+def test_django_reuse_browser_tab_can_be_disabled(tmp_path: Path) -> None:
+    cfg = tmp_path / "runsite.toml"
+    cfg.write_text(
+        'project_slug = "x"\n[django]\nreuse_browser_tab = false\nbrowser_reuse_grace = 0.5\n'
+    )
+    config = load_config(config_path=cfg, project_root=tmp_path)
+    assert config.django.reuse_browser_tab is False
+    assert config.django.browser_reuse_grace == 0.5
+
+
 def test_loads_pyproject_section(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(

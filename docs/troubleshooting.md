@@ -220,3 +220,18 @@ either:
 - Homepage: `--no-browser` on the CLI.
 - Autologin: `DJANGO_DEV_HELPERS["browser_open"]["enabled"] = False` in
   `settings.py`.
+
+## Restarts keep piling up new browser tabs
+
+Each restart should **refresh** the tabs you already have, not add new ones.
+That relies on `django-dev-helpers`' live-reload:
+
+- Make sure dev-helpers is installed and `live_reload` is enabled (default). It
+  injects an SSE client that reloads the open tab when the server restarts, and
+  lets both packages detect an already-open tab and skip opening a duplicate.
+- If tabs still multiply, the injected script may be blocked by a strict
+  `Content-Security-Policy` in DEBUG — check the browser console, and disable
+  with `DJANGO_DEV_HELPERS["live_reload"]["enabled"] = False` if needed.
+
+To go back to the old "always open a fresh tab" behavior, set
+`[django].reuse_browser_tab = false` in `runsite.toml`.

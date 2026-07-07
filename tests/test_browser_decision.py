@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_site.cli import _resolve_browser_decision
+from run_site.cli import _existing_live_tab, _resolve_browser_decision
 from run_site.config import RunSiteConfig
 from run_site.display_detect import HeadlessSignal
 
@@ -79,3 +80,50 @@ def test_auto_opens_when_local(config: RunSiteConfig) -> None:
     assert should is True
     assert HOMEPAGE in status
     assert "local macOS" in status
+
+
+def _clients_response(payload: bytes) -> MagicMock:
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = lambda *a: False
+    return resp
+
+
+def test_existing_live_tab_true_on_positive_count() -> None:
+    resp = _clients_response(b'{"count": 2}')
+    with (
+        patch("run_site.cli.urllib.request.urlopen", return_value=resp),
+        patch("run_site.cli.time.sleep"),
+    ):
+        assert _existing_live_tab("localhost", 8000, 1.0) is True
+
+
+def test_existing_live_tab_false_on_zero_count() -> None:
+    resp = _clients_response(b'{"count": 0}')
+    with (
+        patch("run_site.cli.urllib.request.urlopen", return_value=resp),
+        patch("run_site.cli.time.sleep"),
+    ):
+        assert _existing_live_tab("localhost", 8000, 1.0) is False
+
+
+def test_existing_live_tab_false_when_endpoint_unreachable() -> None:
+    import urllib.error
+
+    with (
+        patch(
+            "run_site.cli.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("nope"),
+        ),
+        patch("run_site.cli.time.sleep"),
+    ):
+        assert _existing_live_tab("localhost", 8000, 1.0) is False
+
+
+def test_reuse_suffix_added_when_enabled(config: RunSiteConfig) -> None:
+    cfg = replace(config, django=replace(config.django, open_browser=True, reuse_browser_tab=True))
+    _, status = _resolve_browser_decision(
+        config=cfg, cli_choice=None, signal=LOCAL, homepage=HOMEPAGE
+    )
+    assert "refresh an existing tab" in status

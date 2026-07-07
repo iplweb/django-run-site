@@ -387,6 +387,29 @@ own; daphne has none, uvicorn needs `--reload`, gunicorn needs `--reload`).
 The browser probe + auto-open still target `http://<display_host>:<port>/`,
 so the banner's `App:` URL stays meaningful.
 
+### Browser opening & tab reuse
+
+```toml
+[django]
+open_browser = "auto"        # true | false | "auto" (skip when headless)
+reuse_browser_tab = true     # refresh an already-open tab instead of a new one
+browser_reuse_grace = 2.0    # seconds to wait for an open tab to reconnect
+```
+
+`open_browser` controls whether the homepage tab is opened once the server is
+up. `"auto"` (default) skips it when the session looks headless (SSH on macOS,
+no `$DISPLAY`/`$WAYLAND_DISPLAY` on Linux); `true`/`false` force the decision.
+
+`reuse_browser_tab` (default `true`) makes restarts idempotent: after the
+probe, run-site asks `django-dev-helpers`' live-reload endpoint
+(`/__dev_reload__/clients`) whether a tab is already connected and, if so,
+**refreshes it in place** rather than opening a duplicate. It no-ops when
+dev-helpers or its `live_reload` is absent (the endpoint 404s → open as usual),
+so a standalone run-site behaves exactly as before. `browser_reuse_grace` is how
+long it waits for a surviving tab to reconnect before deciding — also the
+first-launch open latency. Set `reuse_browser_tab = false` to restore the old
+"always open a fresh tab" behavior.
+
 ## `[superuser]`
 
 ```toml

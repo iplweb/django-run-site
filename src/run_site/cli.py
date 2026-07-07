@@ -8,6 +8,7 @@ parser.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -15,6 +16,10 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -1122,25 +1127,63 @@ def _resolve_browser_decision(
     so users never wonder "did it skip on purpose or fail silently?".
     """
 
+    def _reuse_suffix(status: str) -> str:
+        # When tab reuse is on, an open tab is refreshed in place rather than
+        # duplicated — say so up front, since the actual skip happens later in
+        # the probe thread, after this banner has already rendered.
+        if config.django.reuse_browser_tab:
+            return status + " (or refresh an existing tab)"
+        return status
+
     if cli_choice is True:
-        return True, f"will open {homepage} (forced by --browser)"
+        return True, _reuse_suffix(f"will open {homepage} (forced by --browser)")
     if cli_choice is False:
         return False, "disabled by --no-browser"
 
     setting = config.django.open_browser
     if setting is True:
-        return True, f"will open {homepage} ([django].open_browser = true)"
+        return True, _reuse_suffix(f"will open {homepage} ([django].open_browser = true)")
     if setting is False:
         return False, "disabled by [django].open_browser = false"
 
     if signal.headless:
         return False, f"skipped — {signal.reason} (pass --browser to override)"
-    return True, f"will open {homepage} ({signal.reason})"
+    return True, _reuse_suffix(f"will open {homepage} ({signal.reason})")
+
+
+def _existing_live_tab(host: str | None, port: int | None, grace: float) -> bool:
+    """True if django-dev-helpers reports an already-connected live-reload
+    client for this server, meaning a surviving tab will reload itself and we
+    should not open a new one. Samples across ``grace`` seconds; any 404 /
+    non-JSON / connection error means "no live-reload → open normally"."""
+    if host is None or port is None:
+        return False
+    url = f"http://{host}:{port}/__dev_reload__/clients"
+    samples = max(1, int(grace / 0.5))
+    for i in range(samples):
+        try:
+            with urllib.request.urlopen(url, timeout=1) as resp:
+                data = json.loads(resp.read().decode())
+            if int(data.get("count", 0)) >= 1:
+                return True
+        except (urllib.error.URLError, OSError, ValueError):
+            # Endpoint absent/unreachable/garbage → treat as "no live tab".
+            pass
+        if i < samples - 1:
+            time.sleep(0.5)
+    return False
 
 
 def _probe_and_open_browser(url: str, homepage: str, config: RunSiteConfig) -> None:
     if not wait_for_http(url, timeout=config.django.probe_timeout):
         return
+    if config.django.reuse_browser_tab:
+        parts = urllib.parse.urlsplit(homepage)
+        if _existing_live_tab(parts.hostname, parts.port, config.django.browser_reuse_grace):
+            logger.info(
+                "existing browser tab detected — refreshing in place, not opening a new tab"
+            )
+            return
     try:
         import webbrowser
 
