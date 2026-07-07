@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] — 2026-07-07
+
+### Added
+
+- **Browser tab reuse across restarts.** With `django-dev-helpers`' new
+  live-reload, a restart now **refreshes the already-open homepage tab** instead
+  of opening a new one. After the server is up, run-site queries dev-helpers'
+  `/__dev_reload__/clients` endpoint and, when a live tab is already connected,
+  skips opening a duplicate. Two new `[django]` knobs: `reuse_browser_tab`
+  (default `true`) and `browser_reuse_grace` (default `2.0`, seconds). The check
+  uses only `urllib` (the CLI stays Django-free) and is backward-compatible —
+  when dev-helpers or its live-reload is absent the endpoint 404s and run-site
+  opens a fresh tab exactly as before. Set `reuse_browser_tab = false` to keep
+  the old behavior.
+
 ## [0.19.0] — 2026-07-06
 
 ### Added
