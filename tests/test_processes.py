@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import http.server
+import os
+import signal
 import socket
 import sys
 import threading
@@ -202,6 +206,103 @@ def test_second_request_forces_immediate_kill(proc_group: ProcessGroup) -> None:
 
     assert not proc_group.all()[0].is_running()
     assert elapsed < 5.0  # forced: must NOT wait the 30s grace
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+def test_terminate_all_recovers_when_group_kill_transiently_fails(
+    proc_group: ProcessGroup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``os.killpg`` can transiently fail with EPERM when the target group
+    holds a zombie (a runserver autoreloader child caught mid-reap), dropping
+    the SIGKILL for the whole group. terminate_all must RETRY the group-kill
+    until it lands — reaping the child without hanging on Ctrl+C."""
+
+    proc_group.GRACE_SECONDS = 0.2
+    _spawn(proc_group, _STUBBORN)  # ignores SIGTERM -> forces the SIGKILL path
+    time.sleep(0.4)
+
+    real_killpg = os.killpg
+    state = {"fails_left": 4}
+
+    def flaky_killpg(pgid: int, sig: int) -> None:
+        if sig == signal.SIGKILL and state["fails_left"] > 0:
+            state["fails_left"] -= 1
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, "killpg", flaky_killpg)
+
+    start = time.monotonic()
+    proc_group.terminate_all()
+    elapsed = time.monotonic() - start
+
+    assert not proc_group.all()[0].is_running()
+    assert state["fails_left"] == 0  # the retry path was actually exercised
+    assert elapsed < 5.0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+def test_terminate_all_falls_back_to_pid_when_group_kill_never_works(
+    proc_group: ProcessGroup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``os.killpg`` can never signal the group, terminate_all must fall
+    back to signalling the tracked pid directly so the child is still reaped
+    (rather than orphaned + a hung run-site)."""
+
+    proc_group.GRACE_SECONDS = 0.2
+    proc_group.KILL_SECONDS = 0.5
+    _spawn(proc_group, _STUBBORN)
+    time.sleep(0.4)
+
+    def always_eperm(pgid: int, sig: int) -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", always_eperm)
+    # os.kill (direct pid) is left intact -> the fallback reaps the child.
+
+    start = time.monotonic()
+    proc_group.terminate_all()
+    elapsed = time.monotonic() - start
+
+    assert not proc_group.all()[0].is_running()
+    assert elapsed < 5.0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+def test_terminate_all_returns_even_if_every_kill_fails(
+    proc_group: ProcessGroup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If neither killpg nor kill can signal the process, terminate_all must
+    STILL return within a bounded time — a leaked child is acceptable, a
+    run-site that never exits on Ctrl+C is not."""
+
+    proc_group.GRACE_SECONDS = 0.2
+    proc_group.KILL_SECONDS = 0.4
+    _spawn(proc_group, _STUBBORN)
+    time.sleep(0.4)
+
+    real_kill = os.kill
+
+    def eperm(*args: object) -> None:
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", eperm)
+    monkeypatch.setattr(os, "kill", eperm)
+
+    start = time.monotonic()
+    proc_group.terminate_all()  # must NOT hang
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+
+    # We deliberately blocked every kill, so reap the leaked child ourselves
+    # with the real os.kill before the fixture teardown runs.
+    proc = proc_group.all()[0]
+    if proc.popen is not None:
+        with contextlib.suppress(ProcessLookupError):
+            real_kill(proc.popen.pid, signal.SIGKILL)
 
 
 class _OkHandler(http.server.BaseHTTPRequestHandler):

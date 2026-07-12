@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.1] — 2026-07-12
+
+### Fixed
+
+- **Ctrl+C could hang forever, orphaning runserver + celery.** `terminate_all`
+  ended its SIGKILL escalation with an *unbounded* `proc.exited.wait()`, on the
+  assumption that "the uncatchable SIGKILL always lands." It doesn't: `os.killpg`
+  can transiently fail with `EPERM` when the target process group holds a
+  process the kernel won't let us signal — most often a zombie child of the
+  runserver's autoreloader caught mid-reap, which drops the signal for the whole
+  group. A single dropped SIGKILL then left the wait blocking indefinitely,
+  so `run-site` never returned on Ctrl+C (had to be `kill -9`'d) and left the
+  runserver (with its daphne child) and celery orphaned — leaking stale
+  containers and dotfiles into the next run. The SIGKILL escalation now
+  **retries** the group-kill (landing on the *whole* group once the zombie
+  clears, so nothing is orphaned) and is **bounded** by `KILL_SECONDS` (3s) with
+  a direct-`os.kill` fallback, guaranteeing shutdown always completes.
+
 ## [0.20.0] — 2026-07-07
 
 ### Added

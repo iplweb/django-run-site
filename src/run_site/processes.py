@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -160,6 +160,10 @@ class ProcessGroup:
     """
 
     GRACE_SECONDS = 5.0
+    # Hard cap on the SIGKILL escalation for a single process. ``os.killpg``
+    # can transiently fail (see :meth:`_force_kill`); we retry within this
+    # window and then give up so Ctrl+C always returns instead of hanging.
+    KILL_SECONDS = 3.0
 
     def __init__(self, mux: LogMultiplexer) -> None:
         self._mux = mux
@@ -261,9 +265,9 @@ class ProcessGroup:
 
         Coordination happens purely through each process's ``exited`` event
         (set by its watch thread). This method never calls ``Popen.wait``, so
-        it cannot race the watch threads or block indefinitely on a child
-        that ignores SIGTERM: the grace window is honoured by event waits and
-        always escalates to the uncatchable SIGKILL.
+        it cannot race the watch threads, and the SIGKILL escalation
+        (:meth:`_force_kill`) is retried and bounded so it can never block
+        indefinitely on a child whose group-kill fails to land.
         """
 
         for proc in self._procs:
@@ -280,8 +284,57 @@ class ProcessGroup:
                     break
                 proc.exited.wait(timeout=min(remaining, 0.1))
             if not proc.exited.is_set():
-                self._signal(proc, signal.SIGKILL)
-                proc.exited.wait()
+                self._force_kill(proc)
+
+    def _force_kill(self, proc: ManagedProcess) -> None:
+        """SIGKILL *proc*'s group, **retrying** until it is reaped or the
+        :attr:`KILL_SECONDS` deadline passes, then falling back to signalling
+        the pid directly.
+
+        Why retry: ``os.killpg`` can transiently fail with ``EPERM`` when the
+        target group holds a process the kernel won't let us signal — most
+        often a zombie child of the runserver's autoreloader caught mid-reap.
+        That drops the SIGKILL for the *whole* group, so a single attempt can
+        silently leave the runserver (and its daphne child) alive; the old
+        code then blocked forever on an unbounded ``exited.wait()`` — the
+        "Ctrl+C never exits" hang. Retrying lands the kill on the entire group
+        the moment the zombie clears (no orphaned daphne child); the direct
+        ``os.kill`` fallback and the hard deadline guarantee this returns even
+        if the group can never be signalled — a leaked child is far better
+        than a run-site that never exits.
+        """
+
+        deadline = time.monotonic() + self.KILL_SECONDS
+        while not proc.exited.is_set():
+            self._signal(proc, signal.SIGKILL)
+            if proc.exited.wait(timeout=0.1):
+                return
+            if time.monotonic() >= deadline:
+                break
+        if proc.exited.is_set():
+            return
+        # Group kill never landed (persistent EPERM/ESRCH). Signal the tracked
+        # leader pid directly as a last resort, then give up so Ctrl+C returns.
+        self._kill_pid(proc, signal.SIGKILL)
+        if not proc.exited.wait(timeout=self.KILL_SECONDS):
+            self._mux.write(
+                "run-site",
+                "yellow",
+                f"[run-site] warning: {proc.name} (pid "
+                f"{proc.popen.pid if proc.popen else '?'}) could not be reaped;"
+                " abandoning it so shutdown can finish",
+            )
+
+    def _kill_pid(self, proc: ManagedProcess, sig: int) -> None:
+        """Signal only the tracked process (not its whole group) — the
+        last-resort path when :func:`os.killpg` cannot signal the group."""
+
+        if proc.popen is None:
+            return
+        # Already gone (ProcessLookupError) or unsignalable (PermissionError):
+        # nothing to do — the watch thread will still set ``exited``.
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(proc.popen.pid, sig)
 
     def _signal(self, proc: ManagedProcess, sig: int) -> None:
         """Send *sig* to a process's whole group, tolerating an already-gone
