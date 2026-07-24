@@ -60,6 +60,7 @@ docs = [
 run-site = "run_site.cli:main"
 
 [project.urls]
+Funding = "https://buymeacoffee.com/mpasternak"
 Homepage = "https://github.com/iplweb/django-run-site"
 Documentation = "https://github.com/iplweb/django-run-site/tree/main/docs"
 Source = "https://github.com/iplweb/django-run-site"
