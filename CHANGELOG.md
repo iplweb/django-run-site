@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Django 6.1 support.** The `test-site` CI matrix now exercises the
+  `examples/test_site` fixture against Django 6.1 alongside 5.2 LTS and 6.0,
+  and `Framework :: Django :: 6.1` was added to the package classifiers.
+  Django 6.1 requires Python >= 3.12, so — mirroring the existing 6.0 rule —
+  the `3.11 × 6.1` combination is excluded from the matrix. The CLI itself
+  stays Django-free, so nothing in `run_site` changed.
+
 ## [0.20.1] — 2026-07-12
 
 ### Fixed
