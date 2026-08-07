@@ -7,7 +7,7 @@ integration tests and as a "show me it works" demo:
   (used as the orchestrator's HTTP probe target).
 - DB / cache config read from `DATABASE_URL` / `REDIS_URL` env vars (set by
   the orchestrator) with a SQLite + locmem fallback for `manage.py check`.
-- Compatible with Django 5.2 LTS and Django 6.0 — see CI matrix.
+- Compatible with Django 5.2 LTS, Django 6.0 and Django 6.1 — see CI matrix.
 
 ## Try it
 
