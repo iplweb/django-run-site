@@ -333,6 +333,7 @@ runserver_bind = "127.0.0.1"
 runserver_display_host = "localhost"
 browser_probe_path = "/admin/login/"
 migrate = true
+migrate_on_change = true   # re-run migrate when */migrations/*.py change
 probe_timeout = 60.0
 # Optional: replace the web process. Default = manage.py runserver.
 # web_command = ["{python}", "-m", "daphne", "-b", "{bind}", "-p", "{port}", "myproject.asgi:application"]
@@ -341,6 +342,36 @@ probe_timeout = 60.0
 `runserver_display_host` differs from `runserver_bind` so URLs stay clean:
 defaulting to `localhost` avoids Safari's HSTS cache being primed by IP
 literals.
+
+### Re-running migrate when migrations change
+
+`migrate` runs once before the web process starts. With `migrate_on_change`
+(default `true`) run-site then keeps watching `*/migrations/*.py` under the
+project root and, when files are added, changed or removed — `git pull`, a
+branch switch, `makemigrations` in another terminal — runs
+`manage.py migrate --noinput` again in the background, logging under the
+`migrate` prefix:
+
+```text
+migrate      | [migrate] migrations changed (app/migrations/0042_x.py) — running migrate…
+migrate      | Applying app.0042_x... OK
+```
+
+- Polling (about every second) uses only the standard library, so it works
+  with any `web_command`, not just `runserver`. Hidden directories (`.git`,
+  `.venv`, …), virtualenvs (any directory holding `pyvenv.cfg`),
+  `site-packages` and `node_modules` are skipped.
+- A burst of changes (a checkout touching many files) is debounced into one run.
+- A failing migrate is reported and the server **keeps running**; save the
+  fixed migration to retry.
+- It only *applies* migrations. Editing a migration that is already applied
+  does not re-apply it — roll back with `manage.py migrate <app> <previous>`
+  first. `post_migrate` hooks are not re-run.
+- The web process may reload a moment before migrate finishes, so the first
+  request after a pull can still hit the old schema — refresh once it's done.
+
+Disable with `migrate_on_change = false` or `--no-migrate-on-change` (force on
+with `--migrate-on-change`). `--no-migrate` / `migrate = false` disable it too.
 
 ### Overriding the web process
 

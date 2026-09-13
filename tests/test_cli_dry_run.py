@@ -316,6 +316,76 @@ def test_celery_active_no_celery_flag_overrides_enabled(minimal_config) -> None:
     assert _celery_active(cfg, opts) is False
 
 
+@pytest.mark.parametrize(
+    ("migrate", "migrate_on_change", "no_migrate", "cli", "expected"),
+    [
+        (True, True, False, None, True),  # default: on
+        (True, False, False, None, False),  # config off
+        (True, False, False, True, True),  # --migrate-on-change beats config
+        (True, True, False, False, False),  # --no-migrate-on-change beats config
+        (True, True, True, True, False),  # --no-migrate disables everything
+        (False, True, False, True, False),  # [django].migrate = false too
+    ],
+)
+def test_migrate_on_change_active_precedence(
+    minimal_config, migrate, migrate_on_change, no_migrate, cli, expected
+) -> None:
+    import argparse
+    from dataclasses import replace
+
+    from run_site.cli import _migrate_on_change_active
+
+    cfg = replace(
+        minimal_config,
+        django=replace(minimal_config.django, migrate=migrate, migrate_on_change=migrate_on_change),
+    )
+    opts = argparse.Namespace(no_migrate=no_migrate, migrate_on_change=cli)
+    assert _migrate_on_change_active(cfg, opts) is expected
+
+
+def test_migrate_on_change_flag_parses() -> None:
+    from run_site.cli import _build_full_parser
+
+    parser = _build_full_parser(hooks=(), extra_processes=(), program="run-site")
+    assert parser.parse_args([]).migrate_on_change is None
+    assert parser.parse_args(["--migrate-on-change"]).migrate_on_change is True
+    assert parser.parse_args(["--no-migrate-on-change"]).migrate_on_change is False
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected", "unexpected"),
+    [
+        (0, "fake-manage migrate --noinput", "failed"),
+        (3, "migrate failed (exit 3)", "interrupted"),
+    ],
+)
+def test_rerun_migrate_streams_output_and_reports_failure(
+    tmp_path: Path, exit_code, expected, unexpected
+) -> None:
+    import sys
+
+    from run_site.cli import _rerun_migrate
+    from run_site.log_multiplexer import captured_multiplexer
+
+    manage_py = tmp_path / "manage.py"
+    manage_py.write_text(
+        f"import sys\nprint('fake-manage', *sys.argv[1:])\nsys.exit({exit_code})\n"
+    )
+    with captured_multiplexer() as (mux, buf):
+        _rerun_migrate(
+            ["app/migrations/0002_x.py"],
+            python=(sys.executable,),
+            manage_py=manage_py,
+            env=dict(__import__("os").environ),
+            cwd=tmp_path,
+            mux=mux,
+        )
+    output = buf.getvalue()
+    assert "migrations changed (app/migrations/0002_x.py)" in output
+    assert expected in output
+    assert unexpected not in output
+
+
 def test_force_reset_threads_into_resolve_git_source(tmp_path: Path, monkeypatch, capsys) -> None:
     """End-to-end: invoking ``run-site run --from-git ... --force-reset``
     must call ``resolve_git_source(force_reset=True)``."""

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`migrate` re-runs automatically when migrations change.** runserver's
+  autoreloader picks up new code, but the schema used to stay wherever the
+  startup `migrate` left it — a `git pull`, branch switch or `makemigrations`
+  mid-session meant a manual `migrate` (or a full restart). run-site now polls
+  `*/migrations/*.py` under the project root (stdlib only, skipping hidden dirs,
+  virtualenvs, `site-packages` and `node_modules`) and, once a burst of changes
+  settles, runs `manage.py migrate --noinput` in the background with its output
+  under the `migrate` prefix. A failing migrate is reported and the server keeps
+  running. On by default via the new `[django].migrate_on_change` knob; disable
+  with `migrate_on_change = false` or `--no-migrate-on-change` (`--no-migrate`
+  and `migrate = false` turn it off too).
+
 ## [0.20.2] — 2026-08-07
 
 ### Added

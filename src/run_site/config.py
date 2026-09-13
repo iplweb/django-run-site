@@ -124,6 +124,10 @@ class DjangoConfig:
     runserver_display_host: str = "localhost"
     browser_probe_path: str = "/admin/login/"
     migrate: bool = True
+    # While serving, re-run ``migrate`` whenever ``*/migrations/*.py`` files
+    # change (git pull, branch switch, makemigrations). Implied off when
+    # ``migrate`` is off.
+    migrate_on_change: bool = True
     probe_timeout: float = 60.0
     # Whether to auto-open a browser tab once the server is up.
     # ``"auto"`` (the default) skips the open when the session looks
@@ -658,6 +662,7 @@ def _build_django(raw: Mapping[str, Any]) -> DjangoConfig:
         runserver_display_host=_str(raw, "runserver_display_host", default="localhost"),
         browser_probe_path=_str(raw, "browser_probe_path", default="/admin/login/"),
         migrate=_bool(raw, "migrate", default=True),
+        migrate_on_change=_bool(raw, "migrate_on_change", default=True),
         probe_timeout=float(timeout),
         web_command=web_command,
         open_browser=open_browser,

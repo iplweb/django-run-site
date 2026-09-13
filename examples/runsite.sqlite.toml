@@ -45,6 +45,7 @@ runserver_bind = "127.0.0.1"
 runserver_display_host = "localhost"
 browser_probe_path = "/admin/login/"
 migrate = true
+migrate_on_change = true
 
 [superuser]
 enabled = true

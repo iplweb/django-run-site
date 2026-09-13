@@ -49,6 +49,8 @@ stack:
 - Local `migrate`, **dev superuser** creation/refresh, `runserver`, Celery
   worker/beat, and any extra processes you declare — multiplexed into one
   terminal with colored log prefixes.
+- `migrate` **re-runs automatically** when `*/migrations/*.py` files change
+  while the site is up (git pull, branch switch, `makemigrations`).
 - HTTP readiness probe and browser auto-open.
 - Lifecycle hooks (`pre_containers`, `post_migrate`, `pre_serve`, …) that can
   shell out (`type = "command"`) or run inside Django (`type = "django"` via

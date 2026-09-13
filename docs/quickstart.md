@@ -127,7 +127,8 @@ That will:
 
 1. Spin up Postgres + Redis in containers on **free ports** (so multiple
    sites can run side-by-side with no port collisions).
-2. Run `manage.py migrate --noinput`.
+2. Run `manage.py migrate --noinput` — and again whenever migration files
+   change while the site is running.
 3. Create or update the `admin/admin` superuser.
 4. Drop a `.run-site-config` TOML at the project root with the live
    ports + connection URLs (read by `django-dev-helpers` and any other

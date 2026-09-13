@@ -112,10 +112,12 @@ def _run_oneshot_streamed(
         env=dict(env) if env is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # Binary pipe, as in ProcessGroup.spawn: the mux wraps it for text
+        # decoding and closes the wrapper at EOF. A text-mode pipe is passed
+        # through unwrapped and never closed, leaking its fd.
     )
     if proc.stdout is not None:
-        mux.attach(spec, proc.stdout)  # type: ignore[arg-type]
+        mux.attach(spec, proc.stdout)
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

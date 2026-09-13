@@ -56,6 +56,7 @@ from run_site.errors import RunSiteError
 from run_site.hooks import build_hook_context, run_hooks
 from run_site.host_discovery import discover_lan_hosts
 from run_site.log_multiplexer import LogMultiplexer
+from run_site.migration_watcher import MigrationWatcher
 from run_site.processes import (
     ProcessGroup,
     TemplateContext,
@@ -323,6 +324,16 @@ def _build_full_parser(
     browser_group.add_argument("--browser", dest="browser", action="store_true", default=None)
     browser_group.add_argument("--no-browser", dest="browser", action="store_false")
     dj.add_argument("--no-migrate", action="store_true")
+    dj.add_argument(
+        "--migrate-on-change",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Re-run migrate while serving whenever */migrations/*.py files change. "
+            "Overrides [django].migrate_on_change (default on); --no-migrate "
+            "disables it too."
+        ),
+    )
     dj.add_argument("--no-superuser", action="store_true")
 
     cel = parser.add_argument_group("Celery")
@@ -610,6 +621,7 @@ def _execute_run(
         secret_key = load_or_generate_secret_key(config.project_root)
 
     proc_group = ProcessGroup(mux)
+    migration_watcher: MigrationWatcher | None = None
 
     try:
         endpoints = ContainerEndpoints(
@@ -744,6 +756,22 @@ def _execute_run(
             env=env_for_subprocess,
             disabled_flags=disabled_hooks,
         )
+
+        # Baseline the migration files *before* the startup migrate, so a
+        # migration that lands while we boot still triggers a re-run once the
+        # watcher starts alongside the web process.
+        if _migrate_on_change_active(config, opts):
+            migration_watcher = MigrationWatcher(
+                config.project_root,
+                on_change=lambda changed: _rerun_migrate(
+                    changed,
+                    python=python,
+                    manage_py=manage_py,
+                    env=env_for_subprocess,
+                    cwd=config.project_root,
+                    mux=mux,
+                ),
+            )
 
         # Migrate.
         if config.django.migrate and not opts.no_migrate:
@@ -1015,6 +1043,15 @@ def _execute_run(
                         color="yellow",
                     )
 
+            if migration_watcher is not None:
+                migration_watcher.start()
+                mux.write(
+                    "migrate",
+                    "magenta",
+                    "[migrate] watching */migrations/*.py — migrate re-runs when they change "
+                    "(--no-migrate-on-change to disable)",
+                )
+
             # Probe + browser open. The probe exists only to gate the browser
             # open on a 2xx — when we've already decided not to open, there's
             # nothing left to wait for.
@@ -1039,6 +1076,7 @@ def _execute_run(
             proc_group.wait_any()
         return _shutdown(
             proc_group=proc_group,
+            migration_watcher=migration_watcher,
             containers=containers,
             sqlite_state=sqlite_state,
             opts=opts,
@@ -1051,6 +1089,7 @@ def _execute_run(
             mux=mux,
         )
     except Exception:
+        _stop_migration_watcher(migration_watcher)
         proc_group.terminate_all()
         with _suppress():
             stop_containers(
@@ -1070,6 +1109,7 @@ def _execute_run(
 def _shutdown(
     *,
     proc_group: ProcessGroup,
+    migration_watcher: MigrationWatcher | None,
     containers: RunSiteContainers,
     sqlite_state: SqliteState | None,
     opts: argparse.Namespace,
@@ -1081,6 +1121,7 @@ def _shutdown(
     env,
     mux: LogMultiplexer,
 ) -> int:
+    _stop_migration_watcher(migration_watcher)
     proc_group.terminate_all()
     with _suppress():
         run_hooks(
@@ -1399,6 +1440,72 @@ def _resolve_sticky_choice(opts: argparse.Namespace, config: RunSiteConfig) -> b
     if cli is not None:
         return bool(cli)
     return config.banner.sticky != "never"
+
+
+def _migrate_on_change_active(config: RunSiteConfig, opts: argparse.Namespace) -> bool:
+    """Whether to re-run migrate while serving when migration files change.
+
+    ``--no-migrate`` / ``[django].migrate = false`` switch it off together
+    with the startup migrate; otherwise ``--[no-]migrate-on-change`` wins
+    over ``[django].migrate_on_change``.
+    """
+
+    if not config.django.migrate or getattr(opts, "no_migrate", False):
+        return False
+    cli = getattr(opts, "migrate_on_change", None)
+    if cli is not None:
+        return bool(cli)
+    return config.django.migrate_on_change
+
+
+def _rerun_migrate(
+    changed: Sequence[str],
+    *,
+    python: tuple[str, ...],
+    manage_py: Path,
+    env: dict[str, str],
+    cwd: Path,
+    mux: LogMultiplexer,
+) -> None:
+    """:class:`MigrationWatcher` callback: apply the changed migrations.
+
+    A failure is reported and swallowed on purpose — a half-written migration
+    must not take the dev server down; saving a fixed file triggers a retry.
+    """
+
+    shown = ", ".join(changed[:3])
+    if len(changed) > 3:
+        shown += f" (+{len(changed) - 3} more)"
+    mux.write("migrate", "magenta", f"[migrate] migrations changed ({shown}) — running migrate…")
+    try:
+        result = run_oneshot(
+            (*python, str(manage_py), "migrate", "--noinput"),
+            env=env,
+            cwd=cwd,
+            mux=mux,
+            mux_stream=mux.stream("migrate", "magenta"),
+        )
+    except OSError as exc:
+        mux.write("migrate", "magenta", f"[migrate] could not start migrate: {exc}")
+        return
+    if result.returncode < 0:
+        # Killed by a signal — normally the Ctrl+C that is shutting us down.
+        mux.write("migrate", "magenta", "[migrate] interrupted")
+    elif not result.ok:
+        mux.write(
+            "migrate",
+            "magenta",
+            f"[migrate] migrate failed (exit {result.returncode}); the server keeps "
+            "running — fix the migration and save it to retry",
+        )
+
+
+def _stop_migration_watcher(watcher: MigrationWatcher | None) -> None:
+    if watcher is None:
+        return
+    # Bounded: an in-flight migrate is not worth blocking shutdown on. The
+    # thread is a daemon, so abandoning it cannot keep the process alive.
+    watcher.stop(timeout=5.0)
 
 
 def _celery_active(config: RunSiteConfig, opts: argparse.Namespace) -> bool:
