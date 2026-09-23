@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Closing the terminal no longer orphans runserver / celery.** Managed
+  processes run in their own sessions, so the hangup (SIGHUP) reached only
+  run-site, which died on it and left the web and worker processes running
+  with `ppid=1`. SIGHUP now triggers the same teardown as Ctrl+C. Output that
+  was going to the vanished terminal is redirected to `/dev/null` first, so the
+  shutdown messages can't fail with `EIO` and abort the cleanup halfway.
+
 ## [0.21.0] — 2026-09-13
 
 ### Added

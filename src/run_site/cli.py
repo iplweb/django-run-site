@@ -1073,6 +1073,17 @@ def _execute_run(
             # nested terminate_all calls. A second Ctrl+C escalates to SIGKILL.
             signal.signal(signal.SIGINT, lambda *_: proc_group.request_shutdown())
             signal.signal(signal.SIGTERM, lambda *_: proc_group.request_shutdown())
+            # Closing the terminal window. Managed processes live in their own
+            # sessions, so the hangup reaches only us — dying on it (the
+            # default action) would orphan runserver / celery.
+            if hasattr(signal, "SIGHUP"):
+                tty_fds = _tty_output_fds()
+
+                def _on_hangup(*_: object) -> None:
+                    _detach_output_from_terminal(tty_fds)
+                    proc_group.request_shutdown()
+
+                signal.signal(signal.SIGHUP, _on_hangup)
             proc_group.wait_any()
         return _shutdown(
             proc_group=proc_group,
@@ -1498,6 +1509,30 @@ def _rerun_migrate(
             f"[migrate] migrate failed (exit {result.returncode}); the server keeps "
             "running — fix the migration and save it to retry",
         )
+
+
+def _tty_output_fds() -> tuple[int, ...]:
+    """stdout / stderr descriptors that are attached to a terminal."""
+
+    return tuple(fd for fd in (1, 2) if os.isatty(fd))
+
+
+def _detach_output_from_terminal(fds: Sequence[int]) -> None:
+    """Point *fds* at ``/dev/null`` after the terminal hung up.
+
+    Every write to a hung-up tty fails with ``EIO``, so the shutdown progress
+    messages would raise mid-teardown and skip the remaining cleanup (e.g.
+    the second container). Nobody can read that output any more, so discarding
+    it is correct. Only ``os.open`` / ``os.dup2`` here — safe in a signal
+    handler.
+    """
+
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        for fd in fds:
+            os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
 
 
 def _stop_migration_watcher(watcher: MigrationWatcher | None) -> None:
