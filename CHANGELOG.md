@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-11-01
+
+### Changed
+
+- Import container classes from `testcontainers.community.*`. The top-level
+  `testcontainers.postgres` and `testcontainers.redis` modules are deprecated
+  shims since testcontainers 4.15.0, which is now the minimum supported version.
+
 ## [0.21.0] — 2026-09-13
 
 ### Added

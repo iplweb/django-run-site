@@ -128,7 +128,7 @@ class TestcontainersPostgres:
         init_script: Path | None,
     ) -> tuple[str, str, int]:
         try:
-            from testcontainers.postgres import PostgresContainer
+            from testcontainers.community.postgres import PostgresContainer
         except ImportError as exc:  # pragma: no cover - import guard
             raise DockerError(
                 "testcontainers[postgres] is required to start PG containers"
@@ -203,7 +203,7 @@ class TestcontainersRedis:
 
     def start(self, *, image: str, name: str | None) -> tuple[str, str, int]:
         try:
-            from testcontainers.redis import RedisContainer
+            from testcontainers.community.redis import RedisContainer
         except ImportError as exc:  # pragma: no cover
             raise DockerError(
                 "testcontainers[redis] is required to start Redis containers"
