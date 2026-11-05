@@ -697,6 +697,12 @@ def prepared_init_script(path: Path | None, *, fix_search_path: bool) -> Iterato
     tmp_path = Path(tmp)
     try:
         write_search_path_filtered(path, tmp_path)
+        # mkstemp creates the file 0600. The copy is bind-mounted into the PG
+        # container, where the entrypoint reads it as the ``postgres`` user (a
+        # different uid). Docker Desktop on macOS ignores host permissions on
+        # bind mounts, but on Linux an 0600 file fails initdb with "Permission
+        # denied" — so make it world-readable, like the source baseline.
+        tmp_path.chmod(0o644)
         yield tmp_path
     finally:
         # The temp copy may already be gone (e.g. cleaned up elsewhere); that

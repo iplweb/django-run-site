@@ -637,6 +637,21 @@ def test_prepared_init_script_filters_and_cleans_up(tmp_path: Path) -> None:
     assert captured is not None and not captured.exists()
 
 
+def test_prepared_init_script_copy_is_world_readable(tmp_path: Path) -> None:
+    """The filtered copy is bind-mounted into the PG container and read there
+    by the ``postgres`` user (another uid) — an 0600 mkstemp file fails initdb
+    on Linux hosts with "Permission denied"."""
+    import stat
+
+    from run_site.dumps import prepared_init_script
+
+    src = tmp_path / "baseline.sql"
+    src.write_text("SELECT pg_catalog.set_config('search_path', '', false);\n")
+    with prepared_init_script(src, fix_search_path=True) as p:
+        assert p is not None
+        assert stat.S_IMODE(p.stat().st_mode) & 0o044 == 0o044
+
+
 def test_execute_post_start_warns_on_missing_pattern(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_config, caplog
 ) -> None:

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Baseline init-script no longer fails on Linux hosts.** With
+  `fix_search_path` enabled, the `sed`-filtered temp copy of the baseline was
+  created by `mkstemp` with mode `0600` and bind-mounted into the PostgreSQL
+  container, where the entrypoint reads it as the `postgres` user (a different
+  uid) — initdb failed with `Permission denied` and the container exited.
+  Docker Desktop on macOS ignores host permissions on bind mounts, which hid
+  the bug there. The copy is now `0644`.
+
 ## [0.21.1] — 2026-11-01
 
 ### Changed
