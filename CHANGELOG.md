@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default PostgreSQL image is now `postgres:18`** (was `postgres:16`), in
+  `config.py`, the examples and the quickstart. Projects that set
+  `[postgres].image` are unaffected. A container kept by `--reuse` is attached
+  by name and keeps its own image and volume, so it stays on its old major
+  until you remove it (`docker rm -f <slug>-runsite-pg`).
+- CI runs the `test-site` matrix against PostgreSQL 17 and 18.
+
 ## [0.21.2] — 2026-11-05
 
 ### Fixed

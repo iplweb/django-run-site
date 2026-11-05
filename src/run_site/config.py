@@ -60,7 +60,7 @@ class PythonConfig:
 @dataclass(frozen=True)
 class PostgresConfig:
     enabled: EnabledTri = "auto"
-    image: str = "postgres:16"
+    image: str = "postgres:18"
     user: str = "django"
     password: str = "password"
     db: str = "django"
@@ -548,7 +548,7 @@ def _build_postgres(raw: Mapping[str, Any]) -> PostgresConfig:
         env[key] = value
     return PostgresConfig(
         enabled=_enabled_tri(raw, "[postgres].enabled", default="auto"),
-        image=_str(raw, "image", default="postgres:16"),
+        image=_str(raw, "image", default="postgres:18"),
         user=_str(raw, "user", default="django"),
         password=_str(raw, "password", default="password"),
         db=_str(raw, "db", default="django"),

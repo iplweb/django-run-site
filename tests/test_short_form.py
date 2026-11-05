@@ -109,7 +109,7 @@ def test_short_form_dispatches_to_run(tmp_path: Path, monkeypatch, capsys) -> No
 
     (tmp_path / "runsite.toml").write_text(
         'project_slug = "demo"\n'
-        '[postgres]\nimage = "postgres:16"\n'
+        '[postgres]\nimage = "postgres:18"\n'
         '[redis]\nimage = "redis:7-alpine"\n'
     )
     manage = tmp_path / "manage.py"
@@ -130,7 +130,7 @@ def test_short_form_with_subdir_path(tmp_path: Path, monkeypatch, capsys) -> Non
     (tmp_path / "runsite.toml").write_text(
         'project_slug = "demo"\n'
         'manage_py = "src/manage.py"\n'
-        '[postgres]\nimage = "postgres:16"\n'
+        '[postgres]\nimage = "postgres:18"\n'
         '[redis]\nimage = "redis:7-alpine"\n'
     )
     manage = src / "manage.py"

@@ -13,7 +13,7 @@ from run_site.errors import ConfigError
 def test_loads_minimal_runsite_toml(tmp_path: Path, minimal_toml: Path) -> None:
     config = load_config(config_path=minimal_toml, project_root=tmp_path)
     assert config.project_slug == "demo"
-    assert config.postgres.image == "postgres:16"
+    assert config.postgres.image == "postgres:18"
     assert config.redis.image == "redis:7-alpine"
     assert config.superuser.username == "admin"
     assert config.django.runserver_display_host == "localhost"
@@ -314,7 +314,7 @@ def test_unknown_env_key_rejected(tmp_path: Path) -> None:
 def test_missing_config_file_returns_defaults(tmp_path: Path) -> None:
     config = load_config(config_path=None, project_root=tmp_path)
     assert config.project_slug == tmp_path.name
-    assert config.postgres.image == "postgres:16"
+    assert config.postgres.image == "postgres:18"
 
 
 def test_callable_must_have_colon(tmp_path: Path) -> None:

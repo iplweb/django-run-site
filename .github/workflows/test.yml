@@ -36,13 +36,15 @@ jobs:
         run: pytest -v -m "not docker" --tb=short
 
   test-site:
-    name: test-site (py${{ matrix.python }} x dj${{ matrix.django }})
+    name: test-site (py${{ matrix.python }} x dj${{ matrix.django }} x pg${{ matrix.postgres }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
         django: ["5.2", "6.0", "6.1"]
+        # 18 = default image (config.py); 17 = previous major still in use.
+        postgres: ["17", "18"]
         exclude:
           - python: "3.11"
             django: "6.0"
@@ -50,7 +52,7 @@ jobs:
             django: "6.1"
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres }}
         ports: ["5432:5432"]
         env:
           POSTGRES_USER: test_site
