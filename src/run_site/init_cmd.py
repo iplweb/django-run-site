@@ -365,7 +365,7 @@ def _render_toml(detected: DetectedDefaults, *, with_celery: bool) -> str:
         lines.append('executable = "auto"')
     lines.append("")
     lines.append("[postgres]")
-    lines.append('image = "postgres:16"')
+    lines.append('image = "postgres:18"')
     lines.append(f'user = "{slug}"')
     lines.append('password = "password"')
     lines.append(f'db = "{slug}"')

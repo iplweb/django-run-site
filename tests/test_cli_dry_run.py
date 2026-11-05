@@ -43,7 +43,7 @@ def test_run_dry_run(tmp_path: Path, monkeypatch, capsys) -> None:
     cfg = tmp_path / "runsite.toml"
     cfg.write_text(
         'project_slug = "demo"\n'
-        '[postgres]\nimage = "postgres:16"\n'
+        '[postgres]\nimage = "postgres:18"\n'
         '[redis]\nimage = "redis:7-alpine"\n'
     )
     (tmp_path / "manage.py").write_text("# fake\n")

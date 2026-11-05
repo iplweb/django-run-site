@@ -71,7 +71,7 @@ venv and lose `site-packages`.
 ```toml
 [postgres]
 enabled = "auto"         # true | false | "auto" (default "auto", see below)
-image = "postgres:16"
+image = "postgres:18"
 user = "myproject"
 password = "password"
 db = "myproject"

@@ -56,7 +56,7 @@ manage_py = "manage.py"
 executable = "auto"
 
 [postgres]
-image = "postgres:16"
+image = "postgres:18"
 user = "myproject"
 password = "password"
 db = "myproject"

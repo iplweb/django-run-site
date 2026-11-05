@@ -8,7 +8,7 @@ manage_py = "manage.py"
 executable = "auto"
 
 [postgres]
-image = "postgres:16"
+image = "postgres:18"
 user = "test_site"
 password = "test-password"
 db = "test_site"

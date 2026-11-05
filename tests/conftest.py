@@ -16,7 +16,7 @@ def minimal_toml(tmp_path: Path) -> Path:
         'project_slug = "demo"\n'
         'manage_py = "manage.py"\n'
         "[postgres]\n"
-        'image = "postgres:16"\n'
+        'image = "postgres:18"\n'
         'user = "demo"\n'
         'password = "demo-pwd"\n'
         'db = "demo"\n'
